@@ -10,7 +10,9 @@ import {
   Car,
   Building2,
   Menu,
-  X
+  X,
+  Megaphone,
+  Globe
 } from 'lucide-vue-next'
 import { ref } from 'vue'
 
@@ -89,6 +91,15 @@ const showNavigation = computed(() => {
           </router-link>
 
           <router-link 
+            to="/vehiculos" 
+            class="flex items-center gap-3 px-4 py-3 rounded-lg text-slate-400 hover:text-emerald-400 hover:bg-slate-800/40 transition-all font-medium"
+            active-class="bg-emerald-500/10 border-l-2 border-emerald-500 text-emerald-400 font-semibold"
+          >
+            <Car class="w-5 h-5" />
+            <span>Inventario (Stock)</span>
+          </router-link>
+
+          <router-link 
             to="/leads" 
             class="flex items-center gap-3 px-4 py-3 rounded-lg text-slate-400 hover:text-emerald-400 hover:bg-slate-800/40 transition-all font-medium"
             active-class="bg-emerald-500/10 border-l-2 border-emerald-500 text-emerald-400 font-semibold"
@@ -104,6 +115,24 @@ const showNavigation = computed(() => {
           >
             <FileCheck class="w-5 h-5" />
             <span>Gestoría</span>
+          </router-link>
+
+          <router-link 
+            to="/campanas" 
+            class="flex items-center gap-3 px-4 py-3 rounded-lg text-slate-400 hover:text-emerald-400 hover:bg-slate-800/40 transition-all font-medium"
+            active-class="bg-emerald-500/10 border-l-2 border-emerald-500 text-emerald-400 font-semibold"
+          >
+            <Megaphone class="w-5 h-5" />
+            <span>Campañas Ads</span>
+          </router-link>
+
+          <router-link 
+            to="/web-builder" 
+            class="flex items-center gap-3 px-4 py-3 rounded-lg text-slate-400 hover:text-emerald-400 hover:bg-slate-800/40 transition-all font-medium"
+            active-class="bg-emerald-500/10 border-l-2 border-emerald-500 text-emerald-400 font-semibold"
+          >
+            <Globe class="w-5 h-5" />
+            <span>Página Web</span>
           </router-link>
         </nav>
       </div>

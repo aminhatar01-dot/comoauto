@@ -47,7 +47,6 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       }
     }
 
-    // Si no detectó la marca de forma explícita, buscar solo los modelos
     if (autoDetectado === 'Indeterminado') {
       for (const item of marcasModelos) {
         for (const mod of item.modelos) {
@@ -73,16 +72,77 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     const esCaliente = lowerText.includes('comprar') || lowerText.includes('precio') || lowerText.includes('interesa') || lowerText.includes('permuta')
     const clasificacion = esCaliente ? 'Caliente' : 'Tibio'
 
+    // 4. Obtener configuración del Bot de la Agencia
+    let config = { encendido: true, hora_inicio: '09:00', hora_fin: '20:00', estrategia: 'catalogo' }
+    try {
+      const { data: agenciaData } = await supabaseAdmin
+        .from('agencias')
+        .select('config_bot')
+        .eq('id', agencia_id)
+        .single()
+      if (agenciaData && agenciaData.config_bot) {
+        config = { ...config, ...agenciaData.config_bot }
+      }
+    } catch (e) {
+      console.warn('No se pudo cargar la configuración de la agencia, se usan valores por defecto.', e)
+    }
+
+    // 5. Validar Horario Comercial (Hora de Servidor ajustada a UTC-3 Argentina)
+    const ahora = new Date()
+    const ahoraArg = new Date(ahora.getTime() - (3 * 60 * 60 * 1000)) // Conversión simple a UTC-3
+    const horaActualStr = ahoraArg.toISOString().substring(11, 16) // Extrae HH:MM
+
+    const dentroDeHorario = config.encendido && (horaActualStr >= config.hora_inicio && horaActualStr <= config.hora_fin)
+
     // Historial inicial
     const historial = [
       {
         emisor: 'cliente',
         mensaje: text,
-        fecha: new Date().toISOString()
+        fecha: ahora.toISOString()
       }
     ]
 
-    // 4. Registrar lead en Supabase
+    // Si está fuera de horario, añadir mensaje de encolamiento
+    if (!dentroDeHorario && config.encendido) {
+      historial.push({
+        emisor: 'bot',
+        mensaje: `[Sistema] Fuera de horario comercial (${config.hora_inicio} a ${config.hora_fin}). Mensaje encolado. Te contactaremos pronto.`,
+        fecha: ahora.toISOString()
+      })
+    }
+
+    // 6. Ruteo Rotativo Multi-vendedor
+    let vendedorAsignadoId: string | null = null
+    try {
+      const { data: usuarios } = await supabaseAdmin
+        .from('usuarios')
+        .select('id')
+        .eq('agencia_id', agencia_id)
+        .in('rol', ['vendedor', 'admin'])
+
+      if (usuarios && usuarios.length > 0) {
+        // Buscar el último lead asignado en esta agencia
+        const { data: ultimoLead } = await supabaseAdmin
+          .from('leads')
+          .select('vendedor_asignado_id')
+          .eq('agencia_id', agencia_id)
+          .not('vendedor_asignado_id', 'is', null)
+          .order('fecha_creacion', { ascending: false })
+          .limit(1)
+
+        const ultimoVendedorId = ultimoLead && ultimoLead.length > 0 ? ultimoLead[0].vendedor_asignado_id : null
+        const indexUltimo = usuarios.findIndex(u => u.id === ultimoVendedorId)
+        
+        // Asignar al siguiente de forma rotatoria
+        const siguienteIndex = (indexUltimo + 1) % usuarios.length
+        vendedorAsignadoId = usuarios[siguienteIndex].id
+      }
+    } catch (e) {
+      console.warn('Error al ejecutar el ruteo rotativo:', e)
+    }
+
+    // 7. Registrar lead en Supabase
     const { data: nuevoLead, error: insertError } = await supabaseAdmin
       .from('leads')
       .insert({
@@ -90,6 +150,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         nombre_cliente: nombre,
         telefono_whatsapp: telefono,
         estado_lead: 'nuevo',
+        vendedor_asignado_id: vendedorAsignadoId,
         historial_conversacion: historial
       })
       .select()
@@ -101,11 +162,13 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     return res.status(200).json({
       success: true,
       lead: nuevoLead,
-      extracccion: {
+      extraccion: {
         auto_detectado: autoDetectado,
         nombre,
         telefono,
-        clasificacion
+        clasificacion,
+        dentro_de_horario: dentroDeHorario,
+        vendedor_asignado_id: vendedorAsignadoId
       }
     })
 

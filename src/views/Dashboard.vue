@@ -9,7 +9,9 @@ import {
   AlertOctagon, 
   Clock, 
   ArrowRight,
-  Sparkles
+  Sparkles,
+  Bot,
+  Phone
 } from 'lucide-vue-next'
 
 const authStore = useAuthStore()
@@ -21,6 +23,20 @@ const stats = ref({
   stockAlertaCount: 5,
   leadsActivos: 18
 })
+
+// Gestión de equipo (ruteo rotativo)
+const vendedores = ref([
+  { id: 'vend-1', nombre: 'Amin Határ', telefono: '+54 9 341 555-001', estado: 'Online', leadsHoy: 4, activo: true },
+  { id: 'vend-2', nombre: 'Laura Fernández', telefono: '+54 9 11 3456-781', estado: 'Online', leadsHoy: 3, activo: false },
+  { id: 'vend-3', nombre: 'Matías Rossi', telefono: '+54 9 341 234-562', estado: 'Offline', leadsHoy: 2, activo: false }
+])
+
+const setSiguienteTurno = (id: string) => {
+  vendedores.value.forEach(v => {
+    v.activo = (v.id === id)
+  })
+}
+
 
 const vehiculosAlerta = ref<any[]>([])
 const ultimosLeads = ref<any[]>([])
@@ -186,6 +202,15 @@ const simulateIncomingLead = () => {
 
   // Actualizar estadísticas del dashboard localmente
   stats.value.leadsActivos++
+
+  // Rotar el turno de vendedor en la UI
+  const activoIdx = vendedores.value.findIndex(v => v.activo)
+  if (activoIdx !== -1) {
+    vendedores.value[activoIdx].leadsHoy++
+    vendedores.value[activoIdx].activo = false
+    const nextIdx = (activoIdx + 1) % vendedores.value.length
+    vendedores.value[nextIdx].activo = true
+  }
 }
 
 // Formateadores
@@ -413,6 +438,79 @@ const formatMoneda = (val: number) => {
               <span>Ver todos los leads capturados</span>
               <ArrowRight class="w-3.5 h-3.5" />
             </router-link>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Gestión de Equipo y Ruteo Rotativo de WhatsApp (Sección Premium) -->
+    <div class="glass-panel p-6 rounded-2xl border border-slate-800 space-y-6 mt-8">
+      <div class="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
+        <div class="flex items-center gap-3">
+          <div class="p-2.5 bg-cyan-500/10 rounded-xl text-cyan-400">
+            <Users class="w-6 h-6" />
+          </div>
+          <div>
+            <h2 class="text-xl font-bold text-white font-sans">Equipo de Ventas & Ruteo WhatsApp</h2>
+            <p class="text-slate-400 text-xs mt-0.5">Distribución equitativa y en tiempo real de los leads entrantes en la agencia</p>
+          </div>
+        </div>
+        <span class="flex items-center gap-1.5 text-xs text-cyan-400 font-semibold bg-cyan-500/10 px-3 py-1.5 rounded-full border border-cyan-500/20">
+          <Sparkles class="w-3.5 h-3.5 animate-pulse" />
+          Ruteo Activo: Rotativo
+        </span>
+      </div>
+
+      <div class="grid grid-cols-1 md:grid-cols-3 gap-6">
+        <div 
+          v-for="vend in vendedores" 
+          :key="vend.id"
+          :class="[
+            'p-5 rounded-xl border transition-all relative overflow-hidden flex flex-col justify-between gap-4 duration-300',
+            vend.activo 
+              ? 'bg-emerald-500/5 border-emerald-500/30 shadow-lg shadow-emerald-500/5' 
+              : 'bg-slate-900/40 border-slate-850 hover:border-slate-800'
+          ]"
+        >
+          <!-- Badge de Turno Activo -->
+          <div v-if="vend.activo" class="absolute top-0 right-0 bg-emerald-500 text-slate-950 text-[9px] font-extrabold uppercase px-2.5 py-1 rounded-bl">
+            Siguiente Lead
+          </div>
+
+          <div class="space-y-2">
+            <div class="flex items-center gap-2.5">
+              <div class="w-10 h-10 rounded-full bg-slate-800 border border-slate-700 flex items-center justify-center text-slate-300 font-bold text-sm">
+                {{ vend.nombre.split(' ').map(n => n[0]).join('') }}
+              </div>
+              <div>
+                <h4 class="font-bold text-sm text-white">{{ vend.nombre }}</h4>
+                <span 
+                  :class="[
+                    'text-[9px] font-bold uppercase tracking-wider',
+                    vend.estado === 'Online' ? 'text-emerald-400 animate-pulse' : 'text-slate-500'
+                  ]"
+                >
+                  ● {{ vend.estado }}
+                </span>
+              </div>
+            </div>
+            
+            <p class="text-xs text-slate-400 font-mono flex items-center gap-1.5 mt-2">
+              <Phone class="w-3.5 h-3.5 text-slate-500" />
+              {{ vend.telefono }}
+            </p>
+          </div>
+
+          <div class="flex justify-between items-center border-t border-slate-800/60 pt-3 text-[11px] text-slate-500">
+            <span>Leads hoy: <strong class="text-white">{{ vend.leadsHoy }}</strong></span>
+            <button 
+              v-if="!vend.activo"
+              @click="setSiguienteTurno(vend.id)"
+              class="px-2.5 py-1 rounded bg-slate-950 border border-slate-800 hover:border-emerald-500/40 hover:text-emerald-400 transition-all cursor-pointer font-bold text-[10px]"
+            >
+              Dar Turno
+            </button>
+            <span v-else class="text-emerald-400 font-bold text-[9px] uppercase tracking-wider">Recibiendo Leads</span>
           </div>
         </div>
       </div>

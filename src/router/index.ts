@@ -16,6 +16,12 @@ const routes: RouteRecordRaw[] = [
     meta: { requiresAuth: true }
   },
   {
+    path: '/vehiculos',
+    name: 'Vehiculos',
+    component: () => import('@/views/Vehiculos.vue'),
+    meta: { requiresAuth: true }
+  },
+  {
     path: '/leads',
     name: 'Leads',
     component: () => import('@/views/CazadorLeads.vue'),
@@ -25,6 +31,18 @@ const routes: RouteRecordRaw[] = [
     path: '/gestoria',
     name: 'Gestoria',
     component: () => import('@/views/Gestoria.vue'),
+    meta: { requiresAuth: true }
+  },
+  {
+    path: '/campanas',
+    name: 'Campanas',
+    component: () => import('@/views/Campanas.vue'),
+    meta: { requiresAuth: true }
+  },
+  {
+    path: '/web-builder',
+    name: 'WebBuilder',
+    component: () => import('@/views/WebBuilder.vue'),
     meta: { requiresAuth: true }
   },
   {

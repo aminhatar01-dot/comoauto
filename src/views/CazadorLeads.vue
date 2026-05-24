@@ -10,7 +10,8 @@ import {
   Sparkles,
   CheckCircle,
   Clock,
-  RefreshCw
+  RefreshCw,
+  Save
 } from 'lucide-vue-next'
 
 const authStore = useAuthStore()
@@ -23,6 +24,22 @@ const selectedLead = ref<any | null>(null)
 const processingBot = ref(false)
 const sendingWhatsApp = ref<string | null>(null)
 
+// Configuración del Bot (reactiva y persistible)
+const configBot = ref({
+  encendido: true,
+  hora_inicio: '09:00',
+  hora_fin: '20:00',
+  estrategia: 'catalogo' // 'catalogo' | 'financiacion' | 'ofertas'
+})
+const savingBot = ref(false)
+
+// Vendedores de la agencia para asignación (ruteo rotativo)
+const vendedores = ref([
+  { id: 'vend-1', nombre: 'Amin Határ', telefono: '+549341555001' },
+  { id: 'vend-2', nombre: 'Laura Fernández', telefono: '+549113456781' },
+  { id: 'vend-3', nombre: 'Matías Rossi', telefono: '+549341234562' }
+])
+
 // Lista de vehículos disponibles de la agencia para simular cotizaciones
 const vehiculosAgencia = ref<any[]>([
   { id: '1', marca: 'Ford', modelo: 'Focus III 2.0 SE', anio: 2017, precio: 3400000 },
@@ -31,9 +48,52 @@ const vehiculosAgencia = ref<any[]>([
   { id: '4', marca: 'Toyota', modelo: 'Corolla 1.8 SEG', anio: 2018, precio: 5400000 }
 ])
 
+// Cargar configuración del bot
+const loadBotConfig = async () => {
+  if (authStore.isDemoMode || !authStore.agencia) return
+  try {
+    const { data, error } = await supabase
+      .from('agencias')
+      .select('config_bot')
+      .eq('id', authStore.activeAgenciaId)
+      .single()
+    if (error) throw error
+    if (data && data.config_bot) {
+      configBot.value = { ...configBot.value, ...data.config_bot }
+    }
+  } catch (err) {
+    console.error('Error al cargar config bot:', err)
+  }
+}
+
+// Guardar configuración del bot
+const handleSaveBotConfig = async () => {
+  savingBot.value = true
+  if (authStore.isDemoMode) {
+    setTimeout(() => {
+      savingBot.value = false
+      alert('Configuración del bot guardada en local (Demo)')
+    }, 800)
+  } else {
+    try {
+      const { error } = await supabase
+        .from('agencias')
+        .update({ config_bot: configBot.value })
+        .eq('id', authStore.activeAgenciaId)
+      if (error) throw error
+      alert('¡Configuración del bot guardada en la nube!')
+    } catch (err: any) {
+      console.error('Error al guardar config bot:', err.message)
+    } finally {
+      savingBot.value = false
+    }
+  }
+}
+
 onMounted(async () => {
   await loadLeads()
   await loadVehiculos()
+  await loadBotConfig()
 })
 
 const loadVehiculos = async () => {
@@ -61,6 +121,7 @@ const loadLeads = async () => {
         telefono_whatsapp: '+5491134567890',
         estado_lead: 'nuevo',
         auto_interes: 'Ford Focus 2017',
+        vendedor_nombre: 'Amin Határ',
         historial_conversacion: [
           { emisor: 'cliente', mensaje: 'Hola, vi la publicación del Focus en Facebook. ¿Sigue disponible?', fecha: new Date(Date.now() - 7200000).toISOString() }
         ],
@@ -73,6 +134,7 @@ const loadLeads = async () => {
         telefono_whatsapp: '+5493412345678',
         estado_lead: 'en_contacto',
         auto_interes: 'Fiat Cronos',
+        vendedor_nombre: 'Laura Fernández',
         historial_conversacion: [
           { emisor: 'cliente', mensaje: 'Hola! Tienen planes de financiación para el Cronos?', fecha: new Date(Date.now() - 86400000).toISOString() },
           { emisor: 'bot', mensaje: '¡Hola María! Sí, contamos con financiación pre-aprobada con DNI de hasta el 50% del valor del Fiat Cronos. ¿Te gustaría simular tu cuota?', fecha: new Date(Date.now() - 86000000).toISOString() }
@@ -86,6 +148,7 @@ const loadLeads = async () => {
         telefono_whatsapp: '+5492619876543',
         estado_lead: 'interesado',
         auto_interes: 'Toyota Corolla',
+        vendedor_nombre: 'Matías Rossi',
         historial_conversacion: [
           { emisor: 'cliente', mensaje: 'Hola, tomás permuta? Tengo un Gol Trend 2015 impecable para entregar por el Corolla.', fecha: new Date(Date.now() - 172800000).toISOString() },
           { emisor: 'bot', mensaje: '¡Hola Roberto! Sí, tomamos vehículos usados llave contra llave. El departamento de tasación ya está al tanto. ¿A qué hora te queda cómodo que te llamemos?', fecha: new Date(Date.now() - 172000000).toISOString() },
@@ -128,7 +191,18 @@ const loadLeads = async () => {
             }
           }
 
-          return { ...item, clasificacion: clasif, auto_interes: auto }
+          // Asignar nombre del vendedor basado en el ID o distribución rotativa inicial
+          let vendNombre = 'Bot Autónomo'
+          if (item.vendedor_asignado_id) {
+            const v = vendedores.value.find(vend => vend.id === item.vendedor_asignado_id)
+            if (v) vendNombre = v.nombre
+          } else {
+            // Asignación simulada para registros huérfanos
+            const vIndex = (item.nombre_cliente.charCodeAt(0) || 0) % vendedores.value.length
+            vendNombre = vendedores.value[vIndex].nombre
+          }
+
+          return { ...item, clasificacion: clasif, auto_interes: auto, vendedor_nombre: vendNombre }
         })
         if (leads.value.length > 0 && !selectedLead.value) {
           selectedLead.value = leads.value[0]
@@ -168,12 +242,15 @@ const handleHuntLead = async () => {
         }
       }
 
+      const randomVendedor = vendedores.value[Math.floor(Math.random() * vendedores.value.length)]
+
       const nuevoLead = {
         id: 'lead-' + Date.now(),
         nombre_cliente: nombre,
         telefono_whatsapp: tel,
         estado_lead: 'nuevo',
         auto_interes: auto,
+        vendedor_nombre: randomVendedor.nombre,
         historial_conversacion: [
           { emisor: 'cliente', mensaje: rawSocialText.value, fecha: new Date().toISOString() }
         ],
@@ -339,6 +416,68 @@ const formatFecha = (isoString: string) => {
           </div>
         </div>
 
+        <!-- Tarjeta Configuración del Bot Cazador -->
+        <div class="glass-panel p-6 rounded-2xl border border-slate-800 space-y-4">
+          <div class="flex items-center justify-between">
+            <div class="flex items-center gap-2 text-emerald-400 font-bold">
+              <Bot class="w-5 h-5 text-emerald-400" />
+              <span>Configuración del Bot IA</span>
+            </div>
+            
+            <div 
+              @click="configBot.encendido = !configBot.encendido"
+              :class="[
+                'w-11 h-6 rounded-full p-0.5 transition-all duration-300 cursor-pointer',
+                configBot.encendido ? 'bg-emerald-500' : 'bg-slate-850 border border-slate-700'
+              ]"
+            >
+              <div 
+                :class="[
+                  'w-5 h-5 rounded-full bg-slate-950 transition-all duration-300 shadow-md transform',
+                  configBot.encendido ? 'translate-x-5' : 'translate-x-0'
+                ]"
+              ></div>
+            </div>
+          </div>
+
+          <div class="space-y-3.5 pt-2 border-t border-slate-850">
+            <!-- Rango Horario -->
+            <div class="grid grid-cols-2 gap-3">
+              <div>
+                <label class="block text-[9px] text-slate-500 font-bold uppercase mb-1">Hora Inicio</label>
+                <input v-model="configBot.hora_inicio" type="text" class="w-full px-2.5 py-2 bg-slate-950 border border-slate-800 rounded-lg text-xs text-slate-300 outline-none focus:border-emerald-500" placeholder="09:00" />
+              </div>
+              <div>
+                <label class="block text-[9px] text-slate-500 font-bold uppercase mb-1">Hora Fin</label>
+                <input v-model="configBot.hora_fin" type="text" class="w-full px-2.5 py-2 bg-slate-950 border border-slate-800 rounded-lg text-xs text-slate-300 outline-none focus:border-emerald-500" placeholder="20:00" />
+              </div>
+            </div>
+
+            <!-- Estrategia de Respuestas -->
+            <div>
+              <label class="block text-[9px] text-slate-500 font-bold uppercase mb-1">Estrategia de Respuesta</label>
+              <select 
+                v-model="configBot.estrategia"
+                class="w-full px-2.5 py-2 bg-slate-950 border border-slate-800 rounded-lg text-xs text-slate-300 outline-none focus:border-emerald-500"
+              >
+                <option value="catalogo">Ficha y Catálogo Completo</option>
+                <option value="financiacion">Plan de Financiación Express</option>
+                <option value="ofertas">Ofertas y Promociones Especiales</option>
+              </select>
+            </div>
+
+            <button 
+              @click="handleSaveBotConfig"
+              :disabled="savingBot"
+              class="w-full py-2.5 rounded-xl font-bold bg-slate-900 border border-slate-800 hover:border-emerald-500/40 text-xs text-slate-300 hover:text-white transition-all cursor-pointer flex items-center justify-center gap-1.5"
+            >
+              <span v-if="savingBot" class="w-3.5 h-3.5 border border-emerald-400 border-t-transparent rounded-full animate-spin"></span>
+              <Save v-else class="w-3.5 h-3.5 text-emerald-400" />
+              <span>Guardar Configuración Bot</span>
+            </button>
+          </div>
+        </div>
+
         <!-- Lista de Leads Capturados -->
         <div class="space-y-3">
           <h3 class="text-sm font-bold text-slate-400 uppercase tracking-wider px-1">Leads en Bandeja</h3>
@@ -380,9 +519,12 @@ const formatFecha = (isoString: string) => {
               </p>
               <div class="flex justify-between items-center text-[10px] text-slate-500 mt-1">
                 <span>{{ lead.telefono_whatsapp }}</span>
-                <span class="capitalize px-1.5 py-0.5 bg-slate-800 text-slate-400 rounded">
-                  {{ lead.estado_lead.replace('_', ' ') }}
-                </span>
+                <div class="flex items-center gap-1.5">
+                  <span class="text-[9px] text-cyan-400 font-medium truncate max-w-[80px]">👤 {{ lead.vendedor_nombre }}</span>
+                  <span class="capitalize px-1.5 py-0.5 bg-slate-800 text-slate-400 rounded">
+                    {{ lead.estado_lead.replace('_', ' ') }}
+                  </span>
+                </div>
               </div>
             </div>
           </div>
@@ -414,6 +556,8 @@ const formatFecha = (isoString: string) => {
                 <span class="flex items-center gap-1.5"><Phone class="w-3.5 h-3.5 text-slate-500" /> {{ selectedLead.telefono_whatsapp }}</span>
                 <span>•</span>
                 <span class="flex items-center gap-1.5"><Clock class="w-3.5 h-3.5 text-slate-500" /> Capturado el {{ formatFecha(selectedLead.fecha_creacion) }}</span>
+                <span>•</span>
+                <span class="flex items-center gap-1.5 text-cyan-400 font-semibold">👤 Asignado a: {{ selectedLead.vendedor_nombre }}</span>
               </div>
             </div>
 
