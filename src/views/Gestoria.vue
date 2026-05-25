@@ -13,7 +13,11 @@ import {
   Car,
   Clock,
   RefreshCw,
-  ExternalLink
+  ExternalLink,
+  FolderPlus,
+  Sparkles,
+  Plus,
+  X
 } from 'lucide-vue-next'
 
 const authStore = useAuthStore()
@@ -24,6 +28,15 @@ const loading = ref(false)
 const selectedTramite = ref<any | null>(null)
 const updatingTramite = ref<string | null>(null)
 const successMsg = ref<string | null>(null)
+
+// Estados para creación manual de carpetas
+const showCreateModal = ref(false)
+const vehiculosSinTramite = ref<any[]>([])
+const selectedVehiculoId = ref('')
+const nuevoClienteNombre = ref('')
+const nuevoClienteDni = ref('')
+const nuevoCostoTransferencia = ref(0)
+const creatingFolder = ref(false)
 
 // Checklist de documentos base
 const docLabels: Record<string, string> = {
@@ -46,6 +59,208 @@ const jurisdiccionSelected = ref('santa_fe');
 
 // Estado de subida de archivo
 const uploadingDocKey = ref<string | null>(null);
+
+// Cargar vehículos que no tienen trámite asignado
+const loadVehiculosSinTramite = async () => {
+  if (authStore.isDemoMode) {
+    vehiculosSinTramite.value = [
+      { id: 'demo-v-4', marca: 'Chevrolet', modelo: 'Cruze LTZ', anio: 2019, precio: 3800000, kilometraje: 65000 },
+      { id: 'demo-v-5', marca: 'Toyota', modelo: 'Corolla XEI', anio: 2020, precio: 5200000, kilometraje: 45000 }
+    ]
+    return
+  }
+
+  try {
+    const { data: vehs, error: errorVehs } = await supabase
+      .from('vehiculos')
+      .select('id, marca, modelo, anio, precio, kilometraje, estado')
+      .eq('agencia_id', authStore.activeAgenciaId)
+      .in('estado', ['disponible', 'reservado'])
+
+    if (errorVehs) throw errorVehs
+
+    const idsConTramite = tramites.value.map(t => t.vehiculo_id)
+    vehiculosSinTramite.value = (vehs || []).filter((v: any) => !idsConTramite.includes(v.id))
+  } catch (err: any) {
+    console.error('Error al cargar vehículos sin trámite:', err.message)
+  }
+}
+
+const openCreateModal = async () => {
+  selectedVehiculoId.value = ''
+  nuevoClienteNombre.value = ''
+  nuevoClienteDni.value = ''
+  nuevoCostoTransferencia.value = 0
+  showCreateModal.value = true
+  await loadVehiculosSinTramite()
+}
+
+const crearCarpetaGestoria = async () => {
+  if (!selectedVehiculoId.value) {
+    alert('Por favor selecciona un vehículo de la lista.')
+    return
+  }
+  creatingFolder.value = true
+
+  const veh = vehiculosSinTramite.value.find(v => v.id === selectedVehiculoId.value)
+  if (!veh) {
+    creatingFolder.value = false
+    return
+  }
+
+  const nuevoTramite = {
+    vehiculo_id: selectedVehiculoId.value,
+    estado_tramite: 'pendiente',
+    checklist_documentos: {
+      titulo: false,
+      cedula_verde: false,
+      f08: false,
+      verificacion_policial: false,
+      libre_deuda: false
+    },
+    costo_transferencia: nuevoCostoTransferencia.value || 0,
+    cliente_nombre: nuevoClienteNombre.value || '',
+    cliente_dni: nuevoClienteDni.value || '',
+    archivos_formularios: {}
+  }
+
+  if (authStore.isDemoMode) {
+    const mockId = `tramite-${Date.now()}`
+    const mockTramite = {
+      id: mockId,
+      ...nuevoTramite,
+      vehiculos: {
+        marca: veh.marca,
+        modelo: veh.modelo,
+        anio: veh.anio,
+        precio: veh.precio,
+        kilometraje: veh.kilometraje || 0
+      }
+    }
+    tramites.value.push(mockTramite)
+    selectedTramite.value = mockTramite
+    showCreateModal.value = false
+    creatingFolder.value = false
+    alert('Carpeta de gestoría creada localmente en modo demo.')
+  } else {
+    try {
+      const { data, error } = await supabase
+        .from('tramites_gestoria')
+        .insert([nuevoTramite])
+        .select()
+      
+      if (error) throw error
+
+      if (data && data[0]) {
+        await loadTramites()
+        const creado = tramites.value.find(t => t.vehiculo_id === selectedVehiculoId.value)
+        if (creado) {
+          selectedTramite.value = creado
+        }
+        showCreateModal.value = false
+        alert('Carpeta de gestoría creada con éxito.')
+      }
+    } catch (err: any) {
+      console.error('Error al crear carpeta de gestoría:', err.message)
+      alert('Error al crear carpeta: ' + err.message)
+    } finally {
+      creatingFolder.value = false
+    }
+  }
+}
+
+const autoGenerarCarpetas = async () => {
+  if (confirm('¿Deseas generar carpetas de gestoría automáticamente para todos los vehículos disponibles/reservados en stock que no posean trámite?')) {
+    loading.value = true
+    if (authStore.isDemoMode) {
+      const mockAutos = [
+        { id: 'demo-v-4', marca: 'Chevrolet', modelo: 'Cruze LTZ', anio: 2019, precio: 3800000, kilometraje: 65000 },
+        { id: 'demo-v-5', marca: 'Toyota', modelo: 'Corolla XEI', anio: 2020, precio: 5200000, kilometraje: 45000 }
+      ]
+      mockAutos.forEach((v, index) => {
+        const mockId = `tramite-auto-${index}-${Date.now()}`
+        const mockTramite = {
+          id: mockId,
+          vehiculo_id: v.id,
+          estado_tramite: 'pendiente',
+          checklist_documentos: {
+            titulo: false,
+            cedula_verde: false,
+            f08: false,
+            verificacion_policial: false,
+            libre_deuda: false
+          },
+          costo_transferencia: Math.round(v.precio * 0.05),
+          cliente_nombre: '',
+          cliente_dni: '',
+          archivos_formularios: {},
+          vehiculos: {
+            marca: v.marca,
+            modelo: v.modelo,
+            anio: v.anio,
+            precio: v.precio,
+            kilometraje: v.kilometraje
+          }
+        }
+        tramites.value.push(mockTramite)
+      })
+      if (tramites.value.length > 0) {
+        selectedTramite.value = tramites.value[0]
+      }
+      loading.value = false
+      alert('Carpetas autogeneradas con éxito en modo demo.')
+    } else {
+      try {
+        const { data: vehs, error: errorVehs } = await supabase
+          .from('vehiculos')
+          .select('id, precio, marca, modelo')
+          .eq('agencia_id', authStore.activeAgenciaId)
+          .in('estado', ['disponible', 'reservado'])
+
+        if (errorVehs) throw errorVehs
+
+        const idsConTramite = tramites.value.map(t => t.vehiculo_id)
+        const vehsSinTramite = (vehs || []).filter((v: any) => !idsConTramite.includes(v.id))
+
+        if (vehsSinTramite.length === 0) {
+          alert('Todos los vehículos en stock ya tienen una carpeta de gestoría asignada.')
+          loading.value = false
+          return
+        }
+
+        const inserts = vehsSinTramite.map((v: any) => ({
+          vehiculo_id: v.id,
+          estado_tramite: 'pendiente',
+          checklist_documentos: {
+            titulo: false,
+            cedula_verde: false,
+            f08: false,
+            verificacion_policial: false,
+            libre_deuda: false
+          },
+          costo_transferencia: Math.round(Number(v.precio) * 0.05),
+          cliente_nombre: '',
+          cliente_dni: '',
+          archivos_formularios: {}
+        }))
+
+        const { error: insertError } = await supabase
+          .from('tramites_gestoria')
+          .insert(inserts)
+
+        if (insertError) throw insertError
+
+        await loadTramites()
+        alert(`Se han autogenerado ${inserts.length} carpetas de gestoría.`);
+      } catch (err: any) {
+        console.error('Error al autogenerar carpetas:', err.message)
+        alert('Error al autogenerar carpetas: ' + err.message)
+      } finally {
+        loading.value = false
+      }
+    }
+  }
+}
 
 onMounted(async () => {
   await loadTramites()
@@ -364,7 +579,7 @@ const formatMoneda = (val: number) => {
   <div class="space-y-8 relative">
     
     <!-- Encabezado de la página -->
-    <div class="flex justify-between items-center border-b border-slate-800 pb-5">
+    <div class="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 border-b border-slate-800 pb-5">
       <div class="flex items-center gap-3">
         <div class="p-2.5 bg-emerald-500/10 rounded-xl text-emerald-400">
           <FileText class="w-6 h-6" />
@@ -375,13 +590,33 @@ const formatMoneda = (val: number) => {
         </div>
       </div>
       
-      <button 
-        @click="loadTramites"
-        class="p-2.5 rounded-xl bg-slate-900 border border-slate-800 hover:border-slate-700 text-slate-400 hover:text-white transition-all cursor-pointer"
-        title="Refrescar trámites"
-      >
-        <RefreshCw class="w-5 h-5" />
-      </button>
+      <div class="flex items-center gap-3 w-full sm:w-auto">
+        <button 
+          @click="openCreateModal"
+          class="flex-1 sm:flex-none px-4 py-2.5 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-bold transition-all text-xs flex items-center justify-center gap-2 cursor-pointer shadow-md"
+        >
+          <FolderPlus class="w-4 h-4" />
+          <span>Crear Carpeta</span>
+        </button>
+
+        <button 
+          v-if="authStore.profile?.rol === 'admin'"
+          @click="autoGenerarCarpetas"
+          class="px-4 py-2.5 rounded-xl bg-slate-900 border border-slate-800 hover:border-slate-700 text-slate-300 hover:text-white transition-all text-xs flex items-center justify-center gap-1.5 cursor-pointer"
+          title="Auto-generar para todo el stock"
+        >
+          <Sparkles class="w-4 h-4 text-emerald-400 animate-pulse" />
+          <span class="hidden md:inline">Auto-generar</span>
+        </button>
+
+        <button 
+          @click="loadTramites"
+          class="p-2.5 rounded-xl bg-slate-900 border border-slate-800 hover:border-slate-700 text-slate-400 hover:text-white transition-all cursor-pointer"
+          title="Refrescar trámites"
+        >
+          <RefreshCw class="w-5 h-5" />
+        </button>
+      </div>
     </div>
 
     <!-- Layout Grid -->
@@ -395,8 +630,17 @@ const formatMoneda = (val: number) => {
           <div class="w-8 h-8 border-2 border-emerald-500 border-t-transparent rounded-full animate-spin"></div>
         </div>
 
-        <div v-else-if="tramites.length === 0" class="p-8 rounded-xl bg-slate-900/30 border border-slate-800 text-center text-slate-600 text-sm">
-          No hay carpetas de gestoría creadas.
+        <div v-else-if="tramites.length === 0" class="p-8 rounded-xl bg-slate-900/30 border border-slate-800 text-center space-y-4">
+          <p class="text-slate-500 text-sm">No hay carpetas de gestoría creadas.</p>
+          <div v-if="authStore.profile?.rol === 'admin'" class="flex justify-center">
+            <button 
+              @click="autoGenerarCarpetas"
+              class="px-4 py-2 bg-emerald-500/10 border border-emerald-500/25 hover:border-emerald-500/40 text-emerald-400 hover:text-emerald-300 font-bold text-xs rounded-lg transition-all flex items-center gap-1.5 cursor-pointer"
+            >
+              <Sparkles class="w-3.5 h-3.5" />
+              Auto-generar carpetas para el stock
+            </button>
+          </div>
         </div>
 
         <div v-else class="space-y-3">
@@ -757,6 +1001,108 @@ const formatMoneda = (val: number) => {
         </div>
       </div>
 
+    </div>
+
+    <!-- Modal de Creación de Carpeta de Gestoría -->
+    <div v-if="showCreateModal" class="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/80 backdrop-blur-sm transition-all duration-300">
+      <div class="glass-panel w-full max-w-lg rounded-2xl border border-slate-800 p-6 space-y-6 relative shadow-2xl animate-in fade-in zoom-in duration-200">
+        
+        <!-- Header -->
+        <div class="flex justify-between items-center border-b border-slate-800 pb-4">
+          <div class="flex items-center gap-2">
+            <FolderPlus class="w-5 h-5 text-emerald-400" />
+            <h3 class="text-xl font-bold text-white">Nueva Carpeta de Gestoría</h3>
+          </div>
+          <button @click="showCreateModal = false" class="p-1 rounded-lg hover:bg-slate-800 text-slate-400 hover:text-white cursor-pointer transition-all">
+            <X class="w-5 h-5" />
+          </button>
+        </div>
+
+        <!-- Body -->
+        <div class="space-y-4 max-h-[60vh] overflow-y-auto pr-1">
+          
+          <!-- Selector de Vehículo sin Carpeta -->
+          <div class="space-y-2">
+            <label class="block text-xs font-bold text-slate-400 uppercase tracking-wider">Vehículo del Stock</label>
+            <select 
+              v-model="selectedVehiculoId"
+              class="w-full px-3.5 py-3 bg-slate-950 border border-slate-800 rounded-xl text-xs text-slate-200 outline-none focus:border-emerald-500 transition-all"
+            >
+              <option value="" disabled>Selecciona un vehículo disponible/reservado...</option>
+              <option v-for="v in vehiculosSinTramite" :key="v.id" :value="v.id">
+                {{ v.marca }} {{ v.modelo }} (Año {{ v.anio }} - Precio: ${{ Number(v.precio || 0).toLocaleString() }})
+              </option>
+            </select>
+            <p v-if="vehiculosSinTramite.length === 0" class="text-[10px] text-amber-500 font-semibold mt-1">
+              * Todos los vehículos de tu stock ya tienen carpeta de gestoría iniciada.
+            </p>
+          </div>
+
+          <!-- Campos Cliente -->
+          <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            <div class="space-y-2">
+              <label class="block text-xs font-bold text-slate-400 uppercase tracking-wider">Nombre del Cliente (Opcional)</label>
+              <input 
+                v-model="nuevoClienteNombre"
+                type="text"
+                placeholder="Ej: Eduardo Romero"
+                class="w-full px-3.5 py-2.5 bg-slate-950 border border-slate-800 rounded-xl text-xs text-slate-200 outline-none focus:border-emerald-500 transition-all"
+              />
+            </div>
+
+            <div class="space-y-2">
+              <label class="block text-xs font-bold text-slate-400 uppercase tracking-wider">DNI / CUIT (Opcional)</label>
+              <input 
+                v-model="nuevoClienteDni"
+                type="text"
+                placeholder="Ej: 32.485.962"
+                class="w-full px-3.5 py-2.5 bg-slate-950 border border-slate-800 rounded-xl text-xs text-slate-200 outline-none focus:border-emerald-500 transition-all"
+              />
+            </div>
+          </div>
+
+          <!-- Costo Estimado -->
+          <div class="space-y-2">
+            <label class="block text-xs font-bold text-slate-400 uppercase tracking-wider">Costo Estimado de Transferencia (ARS)</label>
+            <div class="relative">
+              <span class="absolute inset-y-0 left-0 pl-3.5 flex items-center text-slate-500">
+                <DollarSign class="w-4 h-4" />
+              </span>
+              <input 
+                v-model.number="nuevoCostoTransferencia"
+                type="number"
+                placeholder="Ej: 150000"
+                class="w-full pl-9 pr-4 py-2.5 bg-slate-950 border border-slate-800 rounded-xl text-xs text-slate-200 outline-none focus:border-emerald-500 transition-all font-semibold"
+              />
+            </div>
+            <p class="text-[10px] text-slate-500 mt-1 leading-normal">
+              * Se calculará por defecto el 5% si dejas en 0. Podrás editarlo después.
+            </p>
+          </div>
+
+        </div>
+
+        <!-- Footer -->
+        <div class="flex justify-end gap-3 border-t border-slate-800 pt-4">
+          <button 
+            @click="showCreateModal = false"
+            class="px-4 py-2.5 rounded-xl bg-slate-900 border border-slate-800 hover:border-slate-700 text-xs font-bold text-slate-400 hover:text-white transition-all cursor-pointer"
+          >
+            Cancelar
+          </button>
+          
+          <button 
+            @click="crearCarpetaGestoria"
+            :disabled="creatingFolder || !selectedVehiculoId"
+            class="px-4 py-2.5 rounded-xl bg-emerald-500 hover:bg-emerald-400 disabled:opacity-50 disabled:cursor-not-allowed text-slate-950 font-bold transition-all text-xs flex items-center gap-1.5 cursor-pointer shadow-md"
+          >
+            <span v-if="creatingFolder" class="w-3.5 h-3.5 border border-slate-950 border-t-transparent rounded-full animate-spin"></span>
+            <Plus v-else class="w-3.5 h-3.5" />
+            <span>Crear Carpeta</span>
+          </button>
+        </div>
+
+      </div>
     </div>
   </div>
 </template>

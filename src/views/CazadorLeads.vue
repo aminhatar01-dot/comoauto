@@ -41,12 +41,15 @@ const vendedorCanales = ref({
   tiktokUser: '',
   redesPass: '',
   whatsappApiUrl: '',
-  whatsappApiToken: ''
+  whatsappApiToken: '',
+  metaAccessToken: '',
+  tiktokAccessToken: ''
 })
 const showQR = ref(false)
 const savingCanales = ref(false)
 const isConnectingWhatsApp = ref(false)
 const qrCodeImage = ref('')
+let pollingInterval: any = null
 
 // Estados de Re-marketing
 const activeTab = ref('inbox') // 'inbox' | 'remarketing'
@@ -174,7 +177,9 @@ const loadVendedorCanales = async () => {
       tiktokUser: authStore.profile?.rol === 'vendedor' ? '@vendedor.tiktok' : '',
       redesPass: 'Rosariocentral1889$',
       whatsappApiUrl: 'https://api.evolution.comoauto.site/v1',
-      whatsappApiToken: 'my-super-secret-token-1234'
+      whatsappApiToken: 'my-super-secret-token-1234',
+      metaAccessToken: '',
+      tiktokAccessToken: ''
     }
     return
   }
@@ -198,7 +203,9 @@ const loadVendedorCanales = async () => {
         tiktokUser: redes.tiktok?.usuario || '',
         redesPass: redes.instagram?.contrasena || '',
         whatsappApiUrl: whatsapp.api_url || '',
-        whatsappApiToken: whatsapp.api_token || ''
+        whatsappApiToken: whatsapp.api_token || '',
+        metaAccessToken: redes.meta_access_token || '',
+        tiktokAccessToken: redes.tiktok_access_token || ''
       }
     }
   } catch (err) {
@@ -225,7 +232,9 @@ const guardarCanalesVendedor = async () => {
   const configRedes = {
     facebook: { usuario: vendedorCanales.value.instagramUser, contrasena: vendedorCanales.value.redesPass },
     instagram: { usuario: vendedorCanales.value.instagramUser, contrasena: vendedorCanales.value.redesPass },
-    tiktok: { usuario: vendedorCanales.value.tiktokUser, contrasena: vendedorCanales.value.redesPass }
+    tiktok: { usuario: vendedorCanales.value.tiktokUser, contrasena: vendedorCanales.value.redesPass },
+    meta_access_token: vendedorCanales.value.metaAccessToken || '',
+    tiktok_access_token: vendedorCanales.value.tiktokAccessToken || ''
   }
 
   if (authStore.isDemoMode) {
@@ -263,16 +272,78 @@ const simularEscaneoQR = () => {
   alert('¡Código QR Escaneado! Sesión de WhatsApp iniciada exitosamente.')
 }
 
-const desconectarWhatsApp = () => {
-  vendedorCanales.value.whatsappConectado = false
-  vendedorCanales.value.whatsappNumero = ''
-  qrCodeImage.value = ''
-  alert('Sesión de WhatsApp cerrada.')
+const desconectarWhatsApp = async () => {
+  if (pollingInterval) {
+    clearInterval(pollingInterval)
+    pollingInterval = null
+  }
+
+  if (authStore.isDemoMode) {
+    vendedorCanales.value.whatsappConectado = false
+    vendedorCanales.value.whatsappNumero = ''
+    qrCodeImage.value = ''
+    alert('Sesión de WhatsApp cerrada.')
+    return
+  }
+
+  const instanceName = `comoauto_vendedor_${authStore.profile?.id || 'default'}`
+  const apiUrl = vendedorCanales.value.whatsappApiUrl.replace(/\/$/, '')
+
+  if (confirm('¿Estás seguro de que deseas desconectar y eliminar tu instancia de WhatsApp real?')) {
+    try {
+      try {
+        await fetch(`${apiUrl}/instance/logout/${instanceName}`, {
+          method: 'DELETE',
+          headers: { 'apikey': vendedorCanales.value.whatsappApiToken }
+        })
+      } catch (e) {
+        console.warn('Error al desloguear instancia:', e)
+      }
+
+      try {
+        await fetch(`${apiUrl}/instance/delete/${instanceName}`, {
+          method: 'DELETE',
+          headers: { 'apikey': vendedorCanales.value.whatsappApiToken }
+        })
+      } catch (e) {
+        console.warn('Error al borrar la instancia:', e)
+      }
+
+      const configWhatsApp = {
+        conectado: false,
+        numero: '',
+        qr_code: '',
+        api_url: vendedorCanales.value.whatsappApiUrl,
+        api_token: vendedorCanales.value.whatsappApiToken
+      }
+
+      await supabase
+        .from('usuarios')
+        .update({
+          config_conexion_whatsapp: configWhatsApp,
+          telefono_whatsapp: ''
+        })
+        .eq('id', authStore.profile?.id)
+
+      vendedorCanales.value.whatsappConectado = false
+      vendedorCanales.value.whatsappNumero = ''
+      qrCodeImage.value = ''
+      alert('Sesión de WhatsApp cerrada y desconectada de la pasarela.')
+    } catch (err: any) {
+      console.error('Error al desconectar WhatsApp real:', err)
+      alert('Error al desconectar: ' + err.message)
+    }
+  }
 }
 
 const obtenerQRReal = async () => {
-  if (!vendedorCanales.value.whatsappApiUrl || !vendedorCanales.value.whatsappApiToken) {
+  if (authStore.isDemoMode) {
     showQR.value = true
+    return
+  }
+
+  if (!vendedorCanales.value.whatsappApiUrl || !vendedorCanales.value.whatsappApiToken) {
+    alert('Por favor ingresa la URL y Token de la pasarela de WhatsApp.')
     return
   }
 
@@ -280,21 +351,106 @@ const obtenerQRReal = async () => {
   qrCodeImage.value = ''
   showQR.value = true
 
+  const instanceName = `comoauto_vendedor_${authStore.profile?.id || 'default'}`
+  const apiUrl = vendedorCanales.value.whatsappApiUrl.replace(/\/$/, '')
+
   try {
-    const response = await fetch(`${vendedorCanales.value.whatsappApiUrl}/instance/connect`, {
+    try {
+      await fetch(`${apiUrl}/instance/create`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'apikey': vendedorCanales.value.whatsappApiToken
+        },
+        body: JSON.stringify({
+          instanceName,
+          token: vendedorCanales.value.whatsappApiToken,
+          qrcode: true
+        })
+      })
+    } catch (createErr) {
+      console.warn('La instancia ya podría existir:', createErr)
+    }
+
+    const connectRes = await fetch(`${apiUrl}/instance/connect/${instanceName}`, {
       method: 'GET',
       headers: {
         'apikey': vendedorCanales.value.whatsappApiToken
       }
     })
-    const data = await response.json()
-    if (data && data.qrcode) {
-      qrCodeImage.value = data.qrcode
-    } else {
-      qrCodeImage.value = ''
+    const connectData = await connectRes.json()
+
+    let qrBase64 = ''
+    if (connectData) {
+      if (typeof connectData.base64 === 'string') {
+        qrBase64 = connectData.base64
+      } else if (connectData.qrcode && typeof connectData.qrcode.base64 === 'string') {
+        qrBase64 = connectData.qrcode.base64
+      } else if (connectData.code && typeof connectData.code === 'string' && connectData.code.startsWith('data:image')) {
+        qrBase64 = connectData.code
+      }
     }
-  } catch (err) {
-    console.warn('Conexión real no disponible en esta URL de test. Utilizando generador de QR integrado.', err)
+
+    if (qrBase64) {
+      qrCodeImage.value = qrBase64
+    } else {
+      console.warn('Estructura de respuesta QR no reconocida:', connectData)
+      alert('Se inició la instancia, pero no pudimos capturar el QR automáticamente. Revisa tu consola.')
+    }
+
+    if (pollingInterval) clearInterval(pollingInterval)
+
+    pollingInterval = setInterval(async () => {
+      try {
+        const stateRes = await fetch(`${apiUrl}/instance/connectionState/${instanceName}`, {
+          method: 'GET',
+          headers: {
+            'apikey': vendedorCanales.value.whatsappApiToken
+          }
+        })
+        const stateData = await stateRes.json()
+        
+        const isConnected = 
+          stateData?.instance?.state === 'open' || 
+          stateData?.instance?.state === 'connected' ||
+          stateData?.status === 'connected'
+
+        if (isConnected) {
+          clearInterval(pollingInterval)
+          pollingInterval = null
+          
+          vendedorCanales.value.whatsappConectado = true
+          let connectedPhone = vendedorCanales.value.whatsappNumero || ''
+          
+          const configWhatsApp = {
+            conectado: true,
+            numero: connectedPhone,
+            qr_code: '',
+            api_url: vendedorCanales.value.whatsappApiUrl,
+            api_token: vendedorCanales.value.whatsappApiToken
+          }
+
+          const { error: dbError } = await supabase
+            .from('usuarios')
+            .update({
+              config_conexion_whatsapp: configWhatsApp,
+              telefono_whatsapp: connectedPhone
+            })
+            .eq('id', authStore.profile?.id)
+
+          if (dbError) throw dbError
+
+          showQR.value = false
+          alert('¡WhatsApp conectado con éxito de forma real!')
+        }
+      } catch (pollErr) {
+        console.error('Error en el sondeo de conexión WhatsApp:', pollErr)
+      }
+    }, 4000)
+
+  } catch (err: any) {
+    console.error('Error al conectar WhatsApp real:', err)
+    alert('Error al intentar conectar: ' + err.message)
   } finally {
     isConnectingWhatsApp.value = false
   }
@@ -922,6 +1078,46 @@ const formatFecha = (isoString: string) => {
                   class="w-full px-3 py-2 bg-slate-950 border border-slate-800 rounded-lg text-xs text-slate-200 outline-none focus:border-cyan-500"
                   placeholder="••••••••"
                 />
+              </div>
+
+              <div>
+                <label class="block text-[9px] text-slate-500 font-bold uppercase mb-1">Access Token de Meta (Facebook/Instagram)</label>
+                <input 
+                  v-model="vendedorCanales.metaAccessToken"
+                  type="password" 
+                  class="w-full px-3 py-2 bg-slate-950 border border-slate-800 rounded-lg text-xs text-slate-200 outline-none focus:border-cyan-500"
+                  placeholder="EAN... (Token de larga duración)"
+                />
+              </div>
+
+              <div>
+                <label class="block text-[9px] text-slate-500 font-bold uppercase mb-1">Access Token de TikTok</label>
+                <input 
+                  v-model="vendedorCanales.tiktokAccessToken"
+                  type="password" 
+                  class="w-full px-3 py-2 bg-slate-950 border border-slate-800 rounded-lg text-xs text-slate-200 outline-none focus:border-cyan-500"
+                  placeholder="act... (Token oficial de desarrollador)"
+                />
+              </div>
+            </div>
+
+            <!-- Instructivo de Webhooks Reales (Meta y TikTok) -->
+            <div class="p-3 bg-slate-950/80 border border-slate-850 rounded-xl space-y-2 text-[10px] text-slate-450 leading-normal">
+              <span class="block font-bold text-slate-200 uppercase tracking-wider">Instrucciones de Webhook Real</span>
+              <p>
+                Para capturar automáticamente comentarios y mensajes de clientes por IA, configura el Webhook en Meta & TikTok Developers apuntando a:
+              </p>
+              <div class="space-y-1">
+                <span class="block text-[9px] text-slate-550 font-mono">URL del Webhook:</span>
+                <code class="block p-1 bg-slate-900 border border-slate-800 rounded text-cyan-400 font-mono select-all overflow-x-auto text-[9px]">
+                  https://comoauto.vercel.app/api/bot/webhook
+                </code>
+              </div>
+              <div class="space-y-1 mt-1.5">
+                <span class="block text-[9px] text-slate-550 font-mono">Token de Verificación:</span>
+                <code class="block p-1 bg-slate-900 border border-slate-800 rounded text-cyan-400 font-mono select-all text-[9px]">
+                  comoauto_secret_token_verify_2026
+                </code>
               </div>
             </div>
 

@@ -87,15 +87,16 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
     if (apiUrl && apiToken) {
       try {
-        // Limpiar el teléfono de destino (eliminar signos no numéricos, dejar solo dígitos)
         const telefonoDestinoLimpio = telefono_whatsapp.replace(/\D/g, '')
+        const instanceName = `comoauto_vendedor_${lead?.vendedor_asignado_id || 'default'}`
         
         let targetUrl = apiUrl.replace(/\/$/, '')
+        // Asegurar que la URL termine en /message/sendText/[instanceName]
         if (!targetUrl.includes('/message/sendText')) {
-          targetUrl += '/message/sendText'
+          targetUrl = `${targetUrl}/message/sendText/${instanceName}`
         }
 
-        console.log(`[WhatsApp API Real] Enviando a ${targetUrl} para número ${telefonoDestinoLimpio}`)
+        console.log(`[WhatsApp API Real] Enviando a ${targetUrl} para número ${telefonoDestinoLimpio} (Instancia: ${instanceName})`)
 
         const response = await fetch(targetUrl, {
           method: 'POST',
@@ -105,13 +106,9 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           },
           body: JSON.stringify({
             number: telefonoDestinoLimpio,
-            options: {
-              delay: 1000,
-              presence: 'composing'
-            },
-            textMessage: {
-              text: mensajeBot
-            }
+            text: mensajeBot,
+            delay: 1200,
+            linkPreview: true
           })
         })
 
