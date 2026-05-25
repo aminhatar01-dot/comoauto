@@ -13,7 +13,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     return res.status(405).json({ error: 'Método no permitido. Utilizar POST.' })
   }
 
-  const { text, agencia_id } = req.body
+  const { text, agencia_id, vendedor_id } = req.body
 
   if (!text || !agencia_id) {
     return res.status(400).json({ error: 'Faltan parámetros requeridos: text o agencia_id.' })
@@ -112,34 +112,36 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       })
     }
 
-    // 6. Ruteo Rotativo Multi-vendedor
-    let vendedorAsignadoId: string | null = null
-    try {
-      const { data: usuarios } = await supabaseAdmin
-        .from('usuarios')
-        .select('id')
-        .eq('agencia_id', agencia_id)
-        .in('rol', ['vendedor', 'admin'])
-
-      if (usuarios && usuarios.length > 0) {
-        // Buscar el último lead asignado en esta agencia
-        const { data: ultimoLead } = await supabaseAdmin
-          .from('leads')
-          .select('vendedor_asignado_id')
+    // 6. Ruteo Rotativo Multi-vendedor o asignación directa
+    let vendedorAsignadoId: string | null = vendedor_id || null
+    if (!vendedorAsignadoId) {
+      try {
+        const { data: usuarios } = await supabaseAdmin
+          .from('usuarios')
+          .select('id')
           .eq('agencia_id', agencia_id)
-          .not('vendedor_asignado_id', 'is', null)
-          .order('fecha_creacion', { ascending: false })
-          .limit(1)
+          .in('rol', ['vendedor', 'admin'])
 
-        const ultimoVendedorId = ultimoLead && ultimoLead.length > 0 ? ultimoLead[0].vendedor_asignado_id : null
-        const indexUltimo = usuarios.findIndex(u => u.id === ultimoVendedorId)
-        
-        // Asignar al siguiente de forma rotatoria
-        const siguienteIndex = (indexUltimo + 1) % usuarios.length
-        vendedorAsignadoId = usuarios[siguienteIndex].id
+        if (usuarios && usuarios.length > 0) {
+          // Buscar el último lead asignado en esta agencia
+          const { data: ultimoLead } = await supabaseAdmin
+            .from('leads')
+            .select('vendedor_asignado_id')
+            .eq('agencia_id', agencia_id)
+            .not('vendedor_asignado_id', 'is', null)
+            .order('fecha_creacion', { ascending: false })
+            .limit(1)
+
+          const ultimoVendedorId = ultimoLead && ultimoLead.length > 0 ? ultimoLead[0].vendedor_asignado_id : null
+          const indexUltimo = usuarios.findIndex(u => u.id === ultimoVendedorId)
+          
+          // Asignar al siguiente de forma rotatoria
+          const siguienteIndex = (indexUltimo + 1) % usuarios.length
+          vendedorAsignadoId = usuarios[siguienteIndex].id
+        }
+      } catch (e) {
+        console.warn('Error al ejecutar el ruteo rotativo:', e)
       }
-    } catch (e) {
-      console.warn('Error al ejecutar el ruteo rotativo:', e)
     }
 
     // 7. Registrar lead en Supabase

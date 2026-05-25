@@ -21,7 +21,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     // 1. Obtener el lead y su agencia_id desde la base de datos
     const { data: lead, error: getError } = await supabaseAdmin
       .from('leads')
-      .select('agencia_id, historial_conversacion')
+      .select('agencia_id, historial_conversacion, vendedor_asignado_id')
       .eq('id', lead_id)
       .single()
 
@@ -29,7 +29,27 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     const agenciaId = lead?.agencia_id
     const historial = lead?.historial_conversacion || []
 
-    // 2. Obtener la configuración del bot de la agencia
+    // 2. Obtener la configuración de WhatsApp del vendedor asignado (o canal de la agencia)
+    let telefonoEmisor = '+5491100000000'
+    let whatsappConectado = false
+    if (lead?.vendedor_asignado_id) {
+      try {
+        const { data: vendedorData } = await supabaseAdmin
+          .from('usuarios')
+          .select('telefono_whatsapp, config_conexion_whatsapp')
+          .eq('id', lead.vendedor_asignado_id)
+          .single()
+        if (vendedorData) {
+          telefonoEmisor = vendedorData.telefono_whatsapp || telefonoEmisor
+          const configConn = vendedorData.config_conexion_whatsapp || {}
+          whatsappConectado = configConn.conectado || false
+        }
+      } catch (err) {
+        console.warn('No se pudo cargar la configuración de WhatsApp del vendedor asignado:', err)
+      }
+    }
+
+    // 3. Obtener la configuración del bot de la agencia
     let config = { estrategia: 'catalogo' }
     try {
       const { data: agenciaData } = await supabaseAdmin
@@ -44,7 +64,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       console.warn('Error al cargar config_bot en whatsapp endpoint, usando catálogo por defecto.', e)
     }
 
-    // 3. Seleccionar la plantilla de respuesta adecuada
+    // 4. Seleccionar la plantilla de respuesta adecuada
     let mensajeBot = ''
     if (config.estrategia === 'financiacion') {
       mensajeBot = `¡Hola ${nombre_cliente}! 🤖 Te escribo de ComoAuto por tu consulta sobre el *${auto_interes}*. Contamos con un plan de financiación express de hasta el 50% del valor del vehículo en cuotas fijas en pesos y pre-aprobado solo con tu DNI. ¿Te interesaría realizar una simulación rápida de tu cuota?`
@@ -55,16 +75,16 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       mensajeBot = `¡Hola ${nombre_cliente}! 🤖 Te escribo de ComoAuto. Vimos tu interés en el *${auto_interes}*. Te adjunto la ficha técnica: Precio y detalles disponibles en salón para entrega inmediata. ¿Te interesaría pasar a verlo o programar un test drive?`
     }
 
-    console.log(`[WhatsApp Bot] Despachando mensaje a ${nombre_cliente} (${telefono_whatsapp}) bajo estrategia: ${config.estrategia}`)
+    console.log(`[WhatsApp Bot] Despachando mensaje a ${nombre_cliente} (${telefono_whatsapp}) desde canal del vendedor ${telefonoEmisor} (Conectado: ${whatsappConectado}) bajo estrategia: ${config.estrategia}`)
 
-    // 4. Añadir el mensaje de bot al historial
+    // 5. Añadir el mensaje de bot al historial
     historial.push({
       emisor: 'bot',
       mensaje: mensajeBot,
       fecha: new Date().toISOString()
     })
 
-    // 5. Actualizar el lead en la base de datos Supabase
+    // 6. Actualizar el lead en la base de datos Supabase
     const { error: updateError } = await supabaseAdmin
       .from('leads')
       .update({
@@ -79,7 +99,9 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       success: true,
       mensaje: 'Mensaje de WhatsApp automático despachado correctamente.',
       estrategia: config.estrategia,
-      texto_enviado: mensajeBot
+      texto_enviado: mensajeBot,
+      canal_emisor: telefonoEmisor,
+      canal_conectado: whatsappConectado
     })
 
   } catch (err: any) {

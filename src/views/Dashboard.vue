@@ -26,9 +26,9 @@ const stats = ref({
 
 // Gestión de equipo (ruteo rotativo)
 const vendedores = ref([
-  { id: 'vend-1', nombre: 'Amin Határ', telefono: '+54 9 341 555-001', estado: 'Online', leadsHoy: 4, activo: true },
-  { id: 'vend-2', nombre: 'Laura Fernández', telefono: '+54 9 11 3456-781', estado: 'Online', leadsHoy: 3, activo: false },
-  { id: 'vend-3', nombre: 'Matías Rossi', telefono: '+54 9 341 234-562', estado: 'Offline', leadsHoy: 2, activo: false }
+  { id: 'vend-1', nombre: 'Amin Határ', telefono: '+54 9 341 555-001', estado: 'Online', leadsHoy: 4, activo: true, whatsappConectado: true, redesConectadas: true },
+  { id: 'vend-2', nombre: 'Laura Fernández', telefono: '+54 9 11 3456-781', estado: 'Online', leadsHoy: 3, activo: false, whatsappConectado: true, redesConectadas: false },
+  { id: 'vend-3', nombre: 'Matías Rossi', telefono: '+54 9 341 234-562', estado: 'Offline', leadsHoy: 2, activo: false, whatsappConectado: false, redesConectadas: false }
 ])
 
 const setSiguienteTurno = (id: string) => {
@@ -93,11 +93,12 @@ const loadDashboardData = async () => {
   loading.value = true
   if (authStore.isDemoMode) {
     // Cargar datos simulados
+    const esVendedor = authStore.profile?.rol === 'vendedor'
     stats.value = {
-      facturacion: 18450000,
+      facturacion: esVendedor ? 0 : 18450000,
       stockTotal: 28,
-      stockAlertaCount: 6,
-      leadsActivos: 14
+      stockAlertaCount: esVendedor ? 2 : 6,
+      leadsActivos: esVendedor ? 5 : 14
     }
 
     vehiculosAlerta.value = [
@@ -108,10 +109,14 @@ const loadDashboardData = async () => {
       { id: '5', marca: 'Peugeot', modelo: '208 1.6 Feline', anio: 2019, precio: 3200000, dias_en_stock: 46, kilometraje: 68000 }
     ]
 
-    ultimosLeads.value = [
-      { id: '1', nombre_cliente: 'Juan Ignacio Díaz', telefono_whatsapp: '+5491134567890', estado_lead: 'nuevo', fecha_creacion: new Date() },
-      { id: '2', nombre_cliente: 'María Belén Gómez', telefono_whatsapp: '+5493412345678', estado_lead: 'en_contacto', fecha_creacion: new Date(Date.now() - 3600000) }
-    ]
+    ultimosLeads.value = esVendedor 
+      ? [
+          { id: '1', nombre_cliente: 'Juan Ignacio Díaz', telefono_whatsapp: '+5491134567890', estado_lead: 'nuevo', fecha_creacion: new Date(), vendedor_nombre: authStore.profile?.nombre }
+        ]
+      : [
+          { id: '1', nombre_cliente: 'Juan Ignacio Díaz', telefono_whatsapp: '+5491134567890', estado_lead: 'nuevo', fecha_creacion: new Date() },
+          { id: '2', nombre_cliente: 'María Belén Gómez', telefono_whatsapp: '+5493412345678', estado_lead: 'en_contacto', fecha_creacion: new Date(Date.now() - 3600000) }
+        ]
     loading.value = false
   } else {
     // Consulta real a Supabase
@@ -132,11 +137,17 @@ const loadDashboardData = async () => {
       }
 
       // 2. Obtener leads activos (nuevos, en contacto, interesados)
-      const { data: leads, error: leadError } = await supabase
+      let queryLeads = supabase
         .from('leads')
         .select('*')
         .eq('agencia_id', authStore.activeAgenciaId)
         .in('estado_lead', ['nuevo', 'en_contacto', 'interesado'])
+
+      if (authStore.profile?.rol === 'vendedor') {
+        queryLeads = queryLeads.eq('vendedor_asignado_id', authStore.profile.id)
+      }
+
+      const { data: leads, error: leadError } = await queryLeads
         .order('fecha_creacion', { ascending: false })
 
       if (leadError) throw leadError
@@ -146,16 +157,72 @@ const loadDashboardData = async () => {
         ultimosLeads.value = leads.slice(0, 5)
       }
 
-      // 3. Simular facturación basada en vehículos vendidos
-      const { data: vendidos } = await supabase
-        .from('vehiculos')
-        .select('precio')
-        .eq('agencia_id', authStore.activeAgenciaId)
-        .eq('estado', 'vendido')
+      // 3. Simular facturación basada en vehículos vendidos (solo administradores)
+      if (authStore.profile?.rol !== 'vendedor') {
+        const { data: vendidos } = await supabase
+          .from('vehiculos')
+          .select('precio')
+          .eq('agencia_id', authStore.activeAgenciaId)
+          .eq('estado', 'vendido')
 
-      if (vendidos) {
-        const sum = vendidos.reduce((acc, curr) => acc + Number(curr.precio), 0)
-        stats.value.facturacion = sum || 12500000 // Backup si no hay ventas
+        if (vendidos) {
+          const sum = vendidos.reduce((acc, curr) => acc + Number(curr.precio), 0)
+          stats.value.facturacion = sum || 12500000 // Backup si no hay ventas
+        }
+      } else {
+        stats.value.facturacion = 0
+      }
+
+      // 4. Obtener vendedores de la agencia desde la base de datos (solo admins)
+      if (authStore.profile?.rol !== 'vendedor') {
+        const { data: usuariosData, error: usrError } = await supabase
+          .from('usuarios')
+          .select('id, nombre, telefono_whatsapp, config_conexion_whatsapp, config_redes_sociales, rol')
+          .eq('agencia_id', authStore.activeAgenciaId)
+          .in('rol', ['vendedor', 'admin'])
+
+        if (usrError) throw usrError
+
+        if (usuariosData) {
+          // Contar leads de hoy para cada vendedor
+          const inicioHoy = new Date()
+          inicioHoy.setHours(0, 0, 0, 0)
+          
+          const { data: leadsHoyData } = await supabase
+            .from('leads')
+            .select('vendedor_asignado_id')
+            .eq('agencia_id', authStore.activeAgenciaId)
+            .gte('fecha_creacion', inicioHoy.toISOString())
+          
+          const counts: Record<string, number> = {}
+          if (leadsHoyData) {
+            leadsHoyData.forEach(l => {
+              if (l.vendedor_asignado_id) {
+                counts[l.vendedor_asignado_id] = (counts[l.vendedor_asignado_id] || 0) + 1
+              }
+            })
+          }
+
+          vendedores.value = usuariosData.map(u => {
+            const wa = u.config_conexion_whatsapp || {}
+            const redes = u.config_redes_sociales || {}
+            
+            return {
+              id: u.id,
+              nombre: u.nombre,
+              telefono: u.telefono_whatsapp || 'Sin registrar',
+              estado: u.id === authStore.profile?.id ? 'Online' : 'Offline',
+              leadsHoy: counts[u.id] || 0,
+              activo: false,
+              whatsappConectado: wa.conectado || false,
+              redesConectadas: !!(redes.facebook?.usuario || redes.instagram?.usuario)
+            }
+          })
+          
+          if (vendedores.value.length > 0) {
+            vendedores.value[0].activo = true
+          }
+        }
       }
 
     } catch (err: any) {
@@ -248,15 +315,23 @@ const formatMoneda = (val: number) => {
     <div v-else class="space-y-8">
       <!-- Grid de KPIs -->
       <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6">
-        <!-- KPI 1: Facturación -->
+        <!-- KPI 1: Facturación / Desempeño Personal -->
         <div class="glass-panel p-6 rounded-2xl border border-slate-800 flex items-center justify-between relative overflow-hidden group">
           <div class="absolute top-0 right-0 w-24 h-24 bg-emerald-500/5 rounded-full blur-2xl group-hover:bg-emerald-500/10 transition-all duration-300"></div>
-          <div>
+          <div v-if="authStore.profile?.rol !== 'vendedor'">
             <span class="text-xs font-semibold text-slate-400 uppercase tracking-wider">Facturación Estimada</span>
             <h3 class="text-2xl font-bold text-white mt-1.5 font-sans">{{ formatMoneda(stats.facturacion) }}</h3>
             <div class="flex items-center gap-1.5 text-xs text-emerald-400 mt-2">
               <TrendingUp class="w-3.5 h-3.5" />
               <span>+12.4% este mes</span>
+            </div>
+          </div>
+          <div v-else>
+            <span class="text-xs font-semibold text-slate-400 uppercase tracking-wider">Mis Conversiones</span>
+            <h3 class="text-2xl font-bold text-emerald-400 mt-1.5 font-sans">8 ventas</h3>
+            <div class="flex items-center gap-1.5 text-xs text-emerald-400 mt-2">
+              <TrendingUp class="w-3.5 h-3.5" />
+              <span>Rendimiento Personal</span>
             </div>
           </div>
           <div class="p-3 bg-emerald-500/10 rounded-xl text-emerald-400">
@@ -444,7 +519,7 @@ const formatMoneda = (val: number) => {
     </div>
 
     <!-- Gestión de Equipo y Ruteo Rotativo de WhatsApp (Sección Premium) -->
-    <div class="glass-panel p-6 rounded-2xl border border-slate-800 space-y-6 mt-8">
+    <div v-if="authStore.profile?.rol !== 'vendedor'" class="glass-panel p-6 rounded-2xl border border-slate-800 space-y-6 mt-8">
       <div class="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
         <div class="flex items-center gap-3">
           <div class="p-2.5 bg-cyan-500/10 rounded-xl text-cyan-400">
@@ -499,6 +574,30 @@ const formatMoneda = (val: number) => {
               <Phone class="w-3.5 h-3.5 text-slate-500" />
               {{ vend.telefono }}
             </p>
+
+            <!-- Estado de Canales Privados del Vendedor -->
+            <div class="flex flex-wrap gap-2.5 mt-3 pt-2.5 border-t border-slate-800/40">
+              <span 
+                :class="[
+                  'text-[9px] font-bold px-2 py-0.5 rounded-md border',
+                  vend.whatsappConectado 
+                    ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20' 
+                    : 'bg-slate-950 text-slate-600 border-slate-900'
+                ]"
+              >
+                WhatsApp: {{ vend.whatsappConectado ? 'Conectado QR' : 'Inactivo' }}
+              </span>
+              <span 
+                :class="[
+                  'text-[9px] font-bold px-2 py-0.5 rounded-md border',
+                  vend.redesConectadas 
+                    ? 'bg-cyan-500/10 text-cyan-400 border-cyan-500/20' 
+                    : 'bg-slate-950 text-slate-600 border-slate-900'
+                ]"
+              >
+                Redes: {{ vend.redesConectadas ? 'Vinculadas' : 'Inactivas' }}
+              </span>
+            </div>
           </div>
 
           <div class="flex justify-between items-center border-t border-slate-800/60 pt-3 text-[11px] text-slate-500">

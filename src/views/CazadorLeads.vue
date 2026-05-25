@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onMounted } from 'vue'
+import { ref, onMounted, computed } from 'vue'
 import { useAuthStore } from '@/stores/auth'
 import { supabase } from '@/lib/supabase'
 import { 
@@ -32,6 +32,17 @@ const configBot = ref({
   estrategia: 'catalogo' // 'catalogo' | 'financiacion' | 'ofertas'
 })
 const savingBot = ref(false)
+
+// Configuración de canales privados del vendedor
+const vendedorCanales = ref({
+  whatsappConectado: false,
+  whatsappNumero: '',
+  instagramUser: '',
+  redesPass: ''
+})
+const showQR = ref(false)
+const savingCanales = ref(false)
+
 
 // Vendedores de la agencia para asignación (ruteo rotativo)
 const vendedores = ref([
@@ -94,7 +105,121 @@ onMounted(async () => {
   await loadLeads()
   await loadVehiculos()
   await loadBotConfig()
+  await loadVendedorCanales()
 })
+
+// Filtrado de leads por vendedor para estricta privacidad
+const filteredLeads = computed(() => {
+  return leads.value.filter(lead => {
+    // Si el usuario logueado es vendedor, solo puede ver sus propios leads
+    if (authStore.profile?.rol === 'vendedor') {
+      if (authStore.isDemoMode) {
+        return lead.vendedor_nombre === authStore.profile.nombre
+      } else {
+        return lead.vendedor_asignado_id === authStore.profile.id
+      }
+    }
+    return true
+  })
+})
+
+// Cargar canales del vendedor desde Supabase/Local
+const loadVendedorCanales = async () => {
+  if (authStore.isDemoMode || !authStore.profile) {
+    // Modo Demo: Cargar datos iniciales privados del vendedor si corresponde
+    vendedorCanales.value = {
+      whatsappConectado: authStore.profile?.rol === 'vendedor' ? true : false,
+      whatsappNumero: authStore.profile?.rol === 'vendedor' ? '+54 9 341 555-001' : '',
+      instagramUser: authStore.profile?.rol === 'vendedor' ? '@vendedor.comoauto' : '',
+      redesPass: 'Rosariocentral1889$'
+    }
+    return
+  }
+  
+  try {
+    const { data, error } = await supabase
+      .from('usuarios')
+      .select('config_conexion_whatsapp, config_redes_sociales, telefono_whatsapp')
+      .eq('id', authStore.profile.id)
+      .single()
+
+    if (error) throw error
+    if (data) {
+      const whatsapp = data.config_conexion_whatsapp || {}
+      const redes = data.config_redes_sociales || {}
+      
+      vendedorCanales.value = {
+        whatsappConectado: whatsapp.conectado || false,
+        whatsappNumero: whatsapp.numero || data.telefono_whatsapp || '',
+        instagramUser: redes.instagram?.usuario || '',
+        redesPass: redes.instagram?.contrasena || ''
+      }
+    }
+  } catch (err) {
+    console.error('Error al cargar canales del vendedor:', err)
+  }
+}
+
+// Guardar canales del vendedor en Supabase/Local
+const guardarCanalesVendedor = async () => {
+  if (!authStore.profile) {
+    alert('Sesión no encontrada. Por favor inicia sesión.')
+    return
+  }
+  savingCanales.value = true
+  
+  const configWhatsApp = {
+    conectado: vendedorCanales.value.whatsappConectado,
+    numero: vendedorCanales.value.whatsappNumero,
+    qr_code: ''
+  }
+  
+  const configRedes = {
+    facebook: { usuario: vendedorCanales.value.instagramUser, contrasena: vendedorCanales.value.redesPass },
+    instagram: { usuario: vendedorCanales.value.instagramUser, contrasena: vendedorCanales.value.redesPass }
+  }
+
+  if (authStore.isDemoMode) {
+    setTimeout(() => {
+      savingCanales.value = false
+      alert('Configuraciones de canal privadas guardadas localmente (Demo)')
+    }, 800)
+  } else {
+    try {
+      const { error } = await supabase
+        .from('usuarios')
+        .update({
+          telefono_whatsapp: vendedorCanales.value.whatsappNumero,
+          config_conexion_whatsapp: configWhatsApp,
+          config_redes_sociales: configRedes
+        })
+        .eq('id', authStore.profile.id)
+
+      if (error) throw error
+      alert('¡Tus canales de contacto privados se guardaron correctamente!')
+    } catch (err: any) {
+      console.error('Error al guardar canales privados:', err.message)
+    } finally {
+      savingCanales.value = false
+    }
+  }
+}
+
+const simularEscaneoQR = () => {
+  vendedorCanales.value.whatsappConectado = true
+  if (!vendedorCanales.value.whatsappNumero) {
+    vendedorCanales.value.whatsappNumero = '+54 9 341 555-1234'
+  }
+  showQR.value = false
+  alert('¡Código QR Escaneado! Sesión de WhatsApp iniciada exitosamente.')
+}
+
+const desconectarWhatsApp = () => {
+  vendedorCanales.value.whatsappConectado = false
+  vendedorCanales.value.whatsappNumero = ''
+  alert('Sesión de WhatsApp cerrada.')
+}
+
 
 const loadVehiculos = async () => {
   if (authStore.isDemoMode) return
@@ -242,7 +367,9 @@ const handleHuntLead = async () => {
         }
       }
 
+      // Si es vendedor, asignárselo a sí mismo de manera privada, sino elegir uno rotativo
       const randomVendedor = vendedores.value[Math.floor(Math.random() * vendedores.value.length)]
+      const vendedorAsignado = authStore.profile?.rol === 'vendedor' ? authStore.profile.nombre : randomVendedor.nombre
 
       const nuevoLead = {
         id: 'lead-' + Date.now(),
@@ -250,7 +377,7 @@ const handleHuntLead = async () => {
         telefono_whatsapp: tel,
         estado_lead: 'nuevo',
         auto_interes: auto,
-        vendedor_nombre: randomVendedor.nombre,
+        vendedor_nombre: vendedorAsignado,
         historial_conversacion: [
           { emisor: 'cliente', mensaje: rawSocialText.value, fecha: new Date().toISOString() }
         ],
@@ -271,7 +398,8 @@ const handleHuntLead = async () => {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           text: rawSocialText.value,
-          agencia_id: authStore.activeAgenciaId
+          agencia_id: authStore.activeAgenciaId,
+          vendedor_id: authStore.profile?.id
         })
       })
       const result = await response.json()
@@ -297,7 +425,15 @@ const handleStartWhatsApp = async (lead: any) => {
       lead.estado_lead = 'en_contacto'
       const autoObj = vehiculosAgencia.value.find(v => lead.auto_interes.toLowerCase().includes(v.modelo.toLowerCase())) || vehiculosAgencia.value[0]
       
-      const mensajeBot = `¡Hola ${lead.nombre_cliente}! 🤖 Te escribo de ComoAuto. Vimos tu interés en el *${lead.auto_interes}*. Te adjunto la ficha técnica: Precio: $${autoObj.precio.toLocaleString()} ARS. ¿Te interesaría venir a verlo o hacer un test drive?`
+      // Seleccionar plantilla basada en la estrategia activa del bot
+      let mensajeBot = ''
+      if (configBot.value.estrategia === 'financiacion') {
+        mensajeBot = `¡Hola ${lead.nombre_cliente}! 🤖 Te escribo de ComoAuto por tu consulta sobre el *${lead.auto_interes}*. Contamos con un plan de financiación express de hasta el 50% del valor del vehículo en cuotas fijas en pesos y pre-aprobado solo con tu DNI. ¿Te interesaría realizar una simulación rápida de tu cuota?`
+      } else if (configBot.value.estrategia === 'ofertas') {
+        mensajeBot = `¡Hola ${lead.nombre_cliente}! 🤖 ¡Buenas noticias! Te escribo de ComoAuto. El *${lead.auto_interes}* en el que te interesaste cuenta con una promoción exclusiva de semana: ¡Transferencia y gestoría bonificada 100%! ¿Te gustaría reservar una visita en el salón para verlo hoy?`
+      } else {
+        mensajeBot = `¡Hola ${lead.nombre_cliente}! 🤖 Te escribo de ComoAuto. Vimos tu interés en el *${lead.auto_interes}*. Te adjunto la ficha técnica: Precio: $${autoObj.precio.toLocaleString()} ARS. ¿Te interesaría venir a verlo o hacer un test drive?`
+      }
       
       lead.historial_conversacion.push({
         emisor: 'bot',
@@ -478,6 +614,108 @@ const formatFecha = (isoString: string) => {
           </div>
         </div>
 
+        <!-- Tarjeta Canales Privados del Vendedor (WhatsApp QR & Redes) -->
+        <div class="glass-panel p-6 rounded-2xl border border-slate-800 space-y-4">
+          <div class="flex items-center gap-2 text-cyan-400 font-bold">
+            <Phone class="w-4 h-4 text-cyan-400" />
+            <span>Mis Canales (Privado)</span>
+          </div>
+          <p class="text-slate-400 text-xs">
+            Conecta tus canales de atención personales. Los leads capturados de tus redes y tu WhatsApp son 100% privados.
+          </p>
+
+          <!-- WhatsApp Web (QR Scanner Simulation) -->
+          <div class="space-y-3 pt-2 border-t border-slate-850">
+            <h4 class="text-xs font-bold text-slate-200">WhatsApp Web</h4>
+            
+            <!-- Estado Conectado -->
+            <div v-if="vendedorCanales.whatsappConectado" class="p-3 bg-emerald-500/10 border border-emerald-500/20 rounded-xl text-xs text-emerald-400 flex items-center justify-between">
+              <div class="flex items-center gap-2">
+                <span class="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-ping"></span>
+                <span class="truncate">Sesión Activa: <strong>{{ vendedorCanales.whatsappNumero }}</strong></span>
+              </div>
+              <button 
+                @click="desconectarWhatsApp"
+                class="text-[10px] text-rose-450 hover:underline cursor-pointer font-bold shrink-0 ml-1"
+              >
+                Desconectar
+              </button>
+            </div>
+
+            <!-- Estado Desconectado - QR o Input -->
+            <div v-else class="space-y-3">
+              <div v-if="showQR" class="flex flex-col items-center justify-center p-3 bg-white rounded-xl max-w-[140px] mx-auto relative group shadow">
+                <!-- QR Code Simulador -->
+                <div class="w-28 h-28 bg-slate-100 flex items-center justify-center text-slate-800 font-mono text-[8px] text-center border border-slate-300">
+                  <div class="grid grid-cols-4 gap-1 p-2">
+                    <div v-for="i in 16" :key="i" :class="['w-5 h-5 rounded-xs', (i%3==0 || i%5==0) ? 'bg-slate-950' : 'bg-white']"></div>
+                  </div>
+                </div>
+                <span class="text-[8px] text-slate-650 mt-1.5 font-bold">Escanea con WhatsApp</span>
+                <!-- Hover simulación -->
+                <div 
+                  @click="simularEscaneoQR"
+                  class="absolute inset-0 bg-slate-950/90 backdrop-blur-xs flex items-center justify-center opacity-0 group-hover:opacity-100 transition-all duration-300 rounded-xl cursor-pointer"
+                >
+                  <span class="text-[9px] text-emerald-400 font-bold text-center px-2">Click para escanear QR 📱</span>
+                </div>
+              </div>
+
+              <div class="flex gap-2">
+                <input 
+                  v-model="vendedorCanales.whatsappNumero"
+                  type="text" 
+                  placeholder="Número de WhatsApp"
+                  class="flex-1 px-3 py-2 bg-slate-950 border border-slate-800 rounded-lg text-xs text-slate-200 outline-none focus:border-cyan-500"
+                />
+                <button 
+                  @click="showQR = !showQR"
+                  class="px-2.5 py-2 bg-slate-900 border border-slate-800 hover:border-cyan-500/40 text-xs font-bold text-slate-350 hover:text-cyan-400 rounded-lg transition-all cursor-pointer shrink-0"
+                >
+                  {{ showQR ? 'Cerrar' : 'QR' }}
+                </button>
+              </div>
+            </div>
+          </div>
+
+          <!-- Redes Sociales (Facebook/Instagram Credentials) -->
+          <div class="space-y-3 pt-3 border-t border-slate-850">
+            <h4 class="text-xs font-bold text-slate-200">Cuentas de Redes</h4>
+            
+            <div class="space-y-2.5">
+              <div>
+                <label class="block text-[9px] text-slate-500 font-bold uppercase mb-1">Usuario Instagram / FB</label>
+                <input 
+                  v-model="vendedorCanales.instagramUser"
+                  type="text" 
+                  class="w-full px-3 py-2 bg-slate-950 border border-slate-800 rounded-lg text-xs text-slate-200 outline-none focus:border-cyan-500"
+                  placeholder="Ej: @aminhatar.comoauto"
+                />
+              </div>
+              
+              <div>
+                <label class="block text-[9px] text-slate-500 font-bold uppercase mb-1">Contraseña</label>
+                <input 
+                  v-model="vendedorCanales.redesPass"
+                  type="password" 
+                  class="w-full px-3 py-2 bg-slate-950 border border-slate-800 rounded-lg text-xs text-slate-200 outline-none focus:border-cyan-500"
+                  placeholder="••••••••"
+                />
+              </div>
+            </div>
+
+            <button 
+              @click="guardarCanalesVendedor"
+              :disabled="savingCanales"
+              class="w-full py-2.5 rounded-xl font-bold bg-slate-900 border border-slate-800 hover:border-cyan-500/40 text-xs text-slate-300 hover:text-white transition-all cursor-pointer flex items-center justify-center gap-1.5"
+            >
+              <span v-if="savingCanales" class="w-3.5 h-3.5 border border-cyan-400 border-t-transparent rounded-full animate-spin"></span>
+              <Save v-else class="w-3.5 h-3.5 text-cyan-400" />
+              <span>Guardar Cuentas Privadas</span>
+            </button>
+          </div>
+        </div>
+
         <!-- Lista de Leads Capturados -->
         <div class="space-y-3">
           <h3 class="text-sm font-bold text-slate-400 uppercase tracking-wider px-1">Leads en Bandeja</h3>
@@ -486,13 +724,13 @@ const formatFecha = (isoString: string) => {
             <div class="w-8 h-8 border-2 border-emerald-500 border-t-transparent rounded-full animate-spin"></div>
           </div>
 
-          <div v-else-if="leads.length === 0" class="p-8 rounded-xl bg-slate-900/30 border border-slate-800 text-center text-slate-600 text-sm">
+          <div v-else-if="filteredLeads.length === 0" class="p-8 rounded-xl bg-slate-900/30 border border-slate-800 text-center text-slate-600 text-sm">
             No se han registrado leads aún.
           </div>
 
           <div v-else class="space-y-3 max-h-[350px] overflow-y-auto pr-1">
             <div 
-              v-for="lead in leads" 
+              v-for="lead in filteredLeads" 
               :key="lead.id"
               @click="selectLead(lead)"
               :class="[

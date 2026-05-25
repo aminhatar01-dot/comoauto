@@ -31,6 +31,70 @@ const textoAnuncio = ref('')
 const isLaunching = ref(false)
 const successLaunch = ref(false)
 
+// Configuración de Carrusel & Campaña Automática
+const isCarouselMode = ref(false)
+const carruselSlides = ref<any[]>([])
+const activeSlideIdx = ref(0)
+const generatingCarousel = ref(false)
+const carouselGenerated = ref(false)
+const optimizeAutomatically = ref(true)
+
+// Función para cambiar de diapositiva en el carrusel
+const nextSlide = () => {
+  if (carruselSlides.value.length === 0) return
+  activeSlideIdx.value = (activeSlideIdx.value + 1) % carruselSlides.value.length
+}
+
+const prevSlide = () => {
+  if (carruselSlides.value.length === 0) return
+  activeSlideIdx.value = (activeSlideIdx.value - 1 + carruselSlides.value.length) % carruselSlides.value.length
+}
+
+// Generador de Carrusel IA Profesional no repetitivo
+const generarCarruselIA = () => {
+  const v = selectedVehiculo.value
+  if (!v) {
+    alert('Por favor, selecciona primero un vehículo del catálogo.')
+    return
+  }
+  
+  generatingCarousel.value = true
+  carouselGenerated.value = false
+  
+  setTimeout(() => {
+    carruselSlides.value = [
+      {
+        titulo: `🚘 ${v.marca} ${v.modelo} (Año ${v.anio})`,
+        descripcion: `Unidad seleccionada en impecable estado de conservación general, lista para transferir y retirar de nuestro salón hoy. Kilometraje real garantizado.`,
+        cta: 'Consultar WhatsApp 📱',
+        colorGlow: 'from-emerald-500/10 to-cyan-500/10'
+      },
+      {
+        titulo: `📊 FICHA Y EQUIPAMIENTO DE GAMA`,
+        descripcion: `Motor de excelente rendimiento, confort tecnológico premium, control de estabilidad, tapizados premium y servicios al día. ¡Ideal para exigentes!`,
+        cta: 'Ficha Completa 📋',
+        colorGlow: 'from-cyan-500/10 to-blue-500/10'
+      },
+      {
+        titulo: `💰 PLAN DE FINANCIACIÓN EXPRESS`,
+        descripcion: `Subite entregando el 50% ($${(v.precio * 0.5).toLocaleString('es-AR')} ARS) y el resto financialo en cuotas fijas en pesos solo con tu DNI. ¡Resolución en 2 horas!`,
+        cta: 'Simular Cuota 💵',
+        colorGlow: 'from-blue-500/10 to-purple-500/10'
+      },
+      {
+        titulo: `🔄 TASACIÓN EXCLUSIVA DE TU USADO`,
+        descripcion: `Tomamos tu usado llave contra llave en el acto con cotización certificada en base a revistas de mercado automotor. ¡Cambia tu segmento hoy sin esperas!`,
+        cta: 'Cotizar Usado 🚗',
+        colorGlow: 'from-purple-500/10 to-emerald-500/10'
+      }
+    ]
+    activeSlideIdx.value = 0
+    generatingCarousel.value = false
+    carouselGenerated.value = true
+    isCarouselMode.value = true
+  }, 1200)
+}
+
 // Listado de campañas activas / simuladas
 const campanas = ref<any[]>([
   {
@@ -123,7 +187,7 @@ const handleLaunchCampaign = () => {
     const nuevaCampana = {
       id: 'camp-' + Date.now(),
       plataforma: selectedPlatform.value,
-      vehiculo: `${selectedVehiculo.value.marca} ${selectedVehiculo.value.modelo}`,
+      vehiculo: `${selectedVehiculo.value.marca} ${selectedVehiculo.value.modelo} ${isCarouselMode.value ? '(Carrusel IA)' : '(Anuncio)'}`,
       presupuesto: presupuestoDiario.value,
       estado: 'activa',
       metricas: { impresiones: 0, clicks: 0, leads: 0, gasto: 0 }
@@ -136,15 +200,15 @@ const handleLaunchCampaign = () => {
     // Simular crecimiento de métricas de la nueva campaña tras unos segundos
     setTimeout(() => {
       nuevaCampana.metricas = {
-        impresiones: Math.floor(100 + Math.random() * 500),
-        clicks: Math.floor(10 + Math.random() * 40),
-        leads: Math.floor(1 + Math.random() * 4),
-        gasto: Math.floor(200 + Math.random() * 300)
+        impresiones: Math.floor(120 + Math.random() * 550),
+        clicks: Math.floor(15 + Math.random() * 45),
+        leads: Math.floor(2 + Math.random() * 5),
+        gasto: Math.floor(220 + Math.random() * 320)
       }
     }, 5000)
 
     setTimeout(() => { successLaunch.value = false }, 4000)
-  }, 2500)
+  }, 2000)
 }
 
 // Cálculos de KPI globales de marketing
@@ -316,12 +380,54 @@ const formatMoneda = (val: number) => {
 
           <!-- Copia del anuncio -->
           <div class="space-y-2">
-            <label class="block text-[10px] font-bold text-slate-400 uppercase tracking-wider">Texto del Anuncio</label>
+            <label class="block text-[10px] font-bold text-slate-400 uppercase tracking-wider">Texto del Anuncio / Descripción General</label>
             <textarea 
               v-model="textoAnuncio"
-              rows="4"
+              rows="3"
               class="w-full p-3 bg-slate-950 border border-slate-800 rounded-xl focus:border-emerald-500 outline-none text-slate-300 text-xs transition-all placeholder:text-slate-700"
             ></textarea>
+          </div>
+
+          <!-- Modos Avanzados: Carrusel IA & Optimización Automática -->
+          <div class="space-y-3 pt-3 border-t border-slate-850">
+            <!-- Selector Modo Carrusel -->
+            <div class="flex items-center justify-between p-3 bg-slate-950/60 border border-slate-850 rounded-xl">
+              <div>
+                <p class="text-xs font-semibold text-slate-200">Formato Carrusel IA Profesional</p>
+                <p class="text-[9px] text-slate-500">Crea slides con ganchos comerciales originales y no repetitivos</p>
+              </div>
+              <button 
+                @click="generarCarruselIA"
+                :disabled="generatingCarousel || !selectedVehiculoId"
+                class="px-2.5 py-1.5 bg-slate-900 border border-slate-800 hover:border-emerald-500/40 text-[10px] font-bold text-slate-350 hover:text-emerald-400 rounded-lg transition-all cursor-pointer flex items-center gap-1 shrink-0"
+              >
+                <span v-if="generatingCarousel" class="w-3 h-3 border border-emerald-400 border-t-transparent rounded-full animate-spin"></span>
+                <Sparkles v-else class="w-3 h-3 text-emerald-400" />
+                <span>Generar</span>
+              </button>
+            </div>
+
+            <!-- Switch Optimización Automática de Presupuesto y Canales -->
+            <div class="flex items-center justify-between p-3 bg-slate-950/60 border border-slate-850 rounded-xl">
+              <div>
+                <p class="text-xs font-semibold text-slate-200">Campaña Automatizada Directa</p>
+                <p class="text-[9px] text-slate-500">Publicar y optimizar presupuesto/segmentos automáticamente por API</p>
+              </div>
+              <div 
+                @click="optimizeAutomatically = !optimizeAutomatically"
+                :class="[
+                  'w-11 h-6 rounded-full p-0.5 transition-all duration-300 cursor-pointer shrink-0',
+                  optimizeAutomatically ? 'bg-emerald-500' : 'bg-slate-850 border border-slate-700'
+                ]"
+              >
+                <div 
+                  :class="[
+                    'w-5 h-5 rounded-full bg-slate-950 transition-all duration-300 shadow-md transform',
+                    optimizeAutomatically ? 'translate-x-5' : 'translate-x-0'
+                  ]"
+                ></div>
+              </div>
+            </div>
           </div>
 
           <button 
@@ -343,8 +449,8 @@ const formatMoneda = (val: number) => {
         <div class="glass-panel p-6 rounded-2xl border border-slate-800 space-y-4">
           <span class="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Previsualización del Anuncio en Vivo</span>
           
-          <!-- Mock de Meta Ads Feed -->
-          <div v-if="selectedPlatform === 'meta'" class="max-w-md mx-auto bg-slate-950 rounded-xl border border-slate-800 overflow-hidden text-sm">
+          <!-- Mock de Meta Ads Feed (Modo Carrusel o Estático) -->
+          <div v-if="selectedPlatform === 'meta'" class="max-w-md mx-auto bg-slate-950 rounded-xl border border-slate-800 overflow-hidden text-sm relative">
             <div class="p-3 border-b border-slate-800/80 flex items-center gap-2">
               <div class="w-8 h-8 rounded-full bg-slate-800 border border-slate-700 flex items-center justify-center text-cyan-400 font-bold text-xs">
                 C
@@ -359,22 +465,73 @@ const formatMoneda = (val: number) => {
               {{ textoAnuncio }}
             </div>
 
-            <!-- Caja de Imagen/Ficha del Auto -->
-            <div class="aspect-video bg-slate-900 border-t border-b border-slate-850 flex flex-col justify-center items-center relative overflow-hidden p-6 text-center">
-              <Car class="w-12 h-12 text-slate-700 animate-pulse" />
-              <h4 class="font-bold text-white text-base mt-3">{{ selectedVehiculo?.marca }} {{ selectedVehiculo?.modelo }}</h4>
-              <p class="text-xs text-emerald-400 font-bold mt-1" v-if="selectedVehiculo">{{ formatMoneda(selectedVehiculo.precio) }}</p>
+            <!-- MODO CARRUSEL IA INTERACTIVO -->
+            <div v-if="isCarouselMode && carouselGenerated && carruselSlides.length > 0" class="relative group">
+              <div :class="['aspect-video bg-slate-900 border-t border-b border-slate-850 flex flex-col justify-center items-center relative overflow-hidden p-6 text-center transition-all duration-300 bg-gradient-to-br', carruselSlides[activeSlideIdx].colorGlow]">
+                <!-- Flecha de Navegación Izquierda -->
+                <button 
+                  @click="prevSlide"
+                  class="absolute left-2.5 top-1/2 -translate-y-1/2 p-1.5 rounded-full bg-slate-950/80 border border-slate-850 text-slate-350 hover:text-white cursor-pointer opacity-0 group-hover:opacity-100 transition-all duration-300 z-10 text-[9px] font-bold"
+                >
+                  &larr;
+                </button>
+
+                <Car class="w-10 h-10 text-emerald-400/80 animate-pulse mb-3" />
+                <h4 class="font-bold text-white text-base font-sans tracking-tight px-6">{{ carruselSlides[activeSlideIdx].titulo }}</h4>
+                <p class="text-[11px] text-slate-300 mt-2 px-8 leading-relaxed font-sans">{{ carruselSlides[activeSlideIdx].descripcion }}</p>
+
+                <!-- Flecha de Navegación Derecha -->
+                <button 
+                  @click="nextSlide"
+                  class="absolute right-2.5 top-1/2 -translate-y-1/2 p-1.5 rounded-full bg-slate-950/80 border border-slate-850 text-slate-350 hover:text-white cursor-pointer opacity-0 group-hover:opacity-100 transition-all duration-300 z-10 text-[9px] font-bold"
+                >
+                  &rarr;
+                </button>
+
+                <!-- Indicadores de Posición / Puntos Deslizantes -->
+                <div class="absolute bottom-3 left-0 right-0 flex justify-center gap-1.5">
+                  <span 
+                    v-for="(_, sIdx) in carruselSlides" 
+                    :key="sIdx"
+                    :class="[
+                      'w-2 h-2 rounded-full transition-all duration-300',
+                      sIdx === activeSlideIdx ? 'bg-emerald-400 w-4' : 'bg-slate-700'
+                    ]"
+                  ></span>
+                </div>
+              </div>
+
+              <!-- Footer Meta Ad Carrusel -->
+              <div class="p-3.5 bg-slate-900/60 flex justify-between items-center border-t border-slate-850">
+                <div>
+                  <p class="text-[9px] text-slate-500 uppercase tracking-wider font-bold">Carrusel Diapositiva {{ activeSlideIdx + 1 }} de {{ carruselSlides.length }}</p>
+                  <p class="font-bold text-white text-xs mt-0.5">{{ carruselSlides[activeSlideIdx].cta }}</p>
+                </div>
+                <span class="px-3.5 py-2 bg-emerald-500 text-slate-950 font-bold rounded-lg text-xs tracking-wide cursor-pointer hover:bg-emerald-450 transition-colors">
+                  Contactar
+                </span>
+              </div>
             </div>
 
-            <!-- Footer Meta Ad -->
-            <div class="p-3.5 bg-slate-900/60 flex justify-between items-center border-t border-slate-850">
-              <div>
-                <p class="text-[10px] text-slate-400 uppercase tracking-wide">Más Información en WhatsApp</p>
-                <p class="font-bold text-white text-xs">Reservá hoy tu visita</p>
+            <!-- MODO ESTÁTICO (IMAGEN ÚNICA) -->
+            <div v-else>
+              <!-- Caja de Imagen/Ficha del Auto -->
+              <div class="aspect-video bg-slate-900 border-t border-b border-slate-850 flex flex-col justify-center items-center relative overflow-hidden p-6 text-center">
+                <Car class="w-12 h-12 text-slate-700 animate-pulse" />
+                <h4 class="font-bold text-white text-base mt-3">{{ selectedVehiculo?.marca }} {{ selectedVehiculo?.modelo }}</h4>
+                <p class="text-xs text-emerald-400 font-bold mt-1" v-if="selectedVehiculo">{{ formatMoneda(selectedVehiculo.precio) }}</p>
               </div>
-              <span class="px-3 py-1.5 bg-emerald-500 text-slate-950 font-bold rounded-lg text-xs tracking-wide">
-                Enviar Mensaje
-              </span>
+
+              <!-- Footer Meta Ad -->
+              <div class="p-3.5 bg-slate-900/60 flex justify-between items-center border-t border-slate-850">
+                <div>
+                  <p class="text-[10px] text-slate-400 uppercase tracking-wide">Más Información en WhatsApp</p>
+                  <p class="font-bold text-white text-xs">Reservá hoy tu visita</p>
+                </div>
+                <span class="px-3 py-1.5 bg-emerald-500 text-slate-950 font-bold rounded-lg text-xs tracking-wide">
+                  Enviar Mensaje
+                </span>
+              </div>
             </div>
           </div>
 
