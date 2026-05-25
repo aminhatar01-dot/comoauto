@@ -12,7 +12,8 @@ import {
   DollarSign,
   Car,
   Clock,
-  RefreshCw
+  RefreshCw,
+  ExternalLink
 } from 'lucide-vue-next'
 
 const authStore = useAuthStore()
@@ -31,7 +32,20 @@ const docLabels: Record<string, string> = {
   f08: 'Formulario 08 Firmado y Legalizado',
   verificacion_policial: 'F12 (Verificación Policial Vigente)',
   libre_deuda: 'Libre Deuda de Multas e Impuestos'
-}
+};
+
+// Jurisdicciones del trámite en Argentina
+const jurisdicciones = [
+  { id: 'santa_fe', nombre: 'Santa Fe (API)' },
+  { id: 'buenos_aires', nombre: 'Provincia de Buenos Aires (ARBA)' },
+  { id: 'caba', nombre: 'Ciudad Autónoma de Buenos Aires (AGIP)' },
+  { id: 'cordoba', nombre: 'Córdoba (Rentas Córdoba)' },
+  { id: 'mendoza', nombre: 'Mendoza (ATM)' }
+];
+const jurisdiccionSelected = ref('santa_fe');
+
+// Estado de subida de archivo
+const uploadingDocKey = ref<string | null>(null);
 
 onMounted(async () => {
   await loadTramites()
@@ -47,6 +61,11 @@ const loadTramites = async () => {
         vehiculo_id: '1',
         estado_tramite: 'en_proceso',
         costo_transferencia: 180000,
+        cliente_nombre: 'Eduardo Romero',
+        cliente_dni: '32.485.962',
+        archivos_formularios: {
+          titulo: { nombre: 'titulo_focus_firmado.pdf', url: '#', fecha: '25/05/2026' }
+        },
         checklist_documentos: {
           titulo: true,
           cedula_verde: true,
@@ -67,6 +86,9 @@ const loadTramites = async () => {
         vehiculo_id: '2',
         estado_tramite: 'pendiente',
         costo_transferencia: 245000,
+        cliente_nombre: '',
+        cliente_dni: '',
+        archivos_formularios: {},
         checklist_documentos: {
           titulo: false,
           cedula_verde: false,
@@ -87,6 +109,15 @@ const loadTramites = async () => {
         vehiculo_id: '3',
         estado_tramite: 'finalizado',
         costo_transferencia: 140000,
+        cliente_nombre: 'Carlos Spinetta',
+        cliente_dni: '29.124.856',
+        archivos_formularios: {
+          titulo: { nombre: 'titulo_sandero.pdf', url: '#', fecha: '22/05/2026' },
+          cedula_verde: { nombre: 'cedula_verde_sandero.png', url: '#', fecha: '22/05/2026' },
+          f08: { nombre: 'f08_digital_firmado.pdf', url: '#', fecha: '23/05/2026' },
+          verificacion_policial: { nombre: 'f12_policial.pdf', url: '#', fecha: '23/05/2026' },
+          libre_deuda: { nombre: 'libre_deuda_santa_fe.pdf', url: '#', fecha: '24/05/2026' }
+        },
         checklist_documentos: {
           titulo: true,
           cedula_verde: true,
@@ -118,6 +149,9 @@ const loadTramites = async () => {
           estado_tramite,
           checklist_documentos,
           costo_transferencia,
+          cliente_nombre,
+          cliente_dni,
+          archivos_formularios,
           vehiculos (
             marca,
             modelo,
@@ -132,9 +166,14 @@ const loadTramites = async () => {
       if (data) {
         // Filtrar trámites que pertenecen a la agencia del usuario
         const filtered = data.filter((t: any) => t.vehiculos?.agencia_id === authStore.activeAgenciaId)
-        tramites.value = filtered
+        tramites.value = filtered.map(item => ({
+          ...item,
+          cliente_nombre: item.cliente_nombre || '',
+          cliente_dni: item.cliente_dni || '',
+          archivos_formularios: item.archivos_formularios || {}
+        }))
         if (filtered.length > 0 && !selectedTramite.value) {
-          selectedTramite.value = filtered[0]
+          selectedTramite.value = tramites.value[0]
         }
       }
     } catch (err: any) {
@@ -161,6 +200,11 @@ const toggleDoc = async (docKey: string) => {
   const prevVal = selectedTramite.value.checklist_documentos[docKey]
   selectedTramite.value.checklist_documentos[docKey] = !prevVal
   
+  // Si se desmarca, remover metadatos de archivos
+  if (!selectedTramite.value.checklist_documentos[docKey] && selectedTramite.value.archivos_formularios?.[docKey]) {
+    delete selectedTramite.value.archivos_formularios[docKey]
+  }
+
   // Recalcular estado del trámite automáticamente
   const prog = calcularProgreso(selectedTramite.value.checklist_documentos)
   if (prog === 100) {
@@ -171,8 +215,103 @@ const toggleDoc = async (docKey: string) => {
     selectedTramite.value.estado_tramite = 'pendiente'
   }
 
-  // Guardar cambios en base de datos o simular en modo demo
+  // Guardar cambios
   await handleSaveTramite()
+}
+
+// Subida de Archivos (Demo o Supabase Storage)
+const handleFileUpload = async (event: Event, docKey: string) => {
+  const input = event.target as HTMLInputElement
+  if (!input.files || input.files.length === 0 || !selectedTramite.value) return
+  
+  const file = input.files[0]
+  uploadingDocKey.value = docKey
+
+  if (authStore.isDemoMode) {
+    setTimeout(() => {
+      if (!selectedTramite.value.archivos_formularios) {
+        selectedTramite.value.archivos_formularios = {}
+      }
+      selectedTramite.value.archivos_formularios[docKey] = {
+        nombre: file.name,
+        url: '#',
+        fecha: new Date().toLocaleDateString('es-AR')
+      }
+      selectedTramite.value.checklist_documentos[docKey] = true
+      
+      const prog = calcularProgreso(selectedTramite.value.checklist_documentos)
+      if (prog === 100) {
+        selectedTramite.value.estado_tramite = 'finalizado'
+      } else {
+        selectedTramite.value.estado_tramite = 'en_proceso'
+      }
+      uploadingDocKey.value = null
+      alert(`Archivo '${file.name}' subido con éxito a la carpeta del vehículo (Demo)`)
+    }, 1200)
+  } else {
+    try {
+      const fileExt = file.name.split('.').pop()
+      const filePath = `${authStore.activeAgenciaId}/${selectedTramite.value.id}/${docKey}_${Date.now()}.${fileExt}`
+      
+      const { error: uploadError } = await supabase.storage
+        .from('formularios-gestoria')
+        .upload(filePath, file, { cacheControl: '3600', upsert: true })
+
+      if (uploadError) throw uploadError
+
+      const { data: { publicUrl } } = supabase.storage
+        .from('formularios-gestoria')
+        .getPublicUrl(filePath)
+
+      if (!selectedTramite.value.archivos_formularios) {
+        selectedTramite.value.archivos_formularios = {}
+      }
+
+      selectedTramite.value.archivos_formularios[docKey] = {
+        nombre: file.name,
+        url: publicUrl,
+        fecha: new Date().toLocaleDateString('es-AR')
+      }
+      selectedTramite.value.checklist_documentos[docKey] = true
+      
+      const prog = calcularProgreso(selectedTramite.value.checklist_documentos)
+      if (prog === 100) {
+        selectedTramite.value.estado_tramite = 'finalizado'
+      } else {
+        selectedTramite.value.estado_tramite = 'en_proceso'
+      }
+
+      await handleSaveTramite()
+      alert(`¡Archivo '${file.name}' cargado en la nube!`)
+    } catch (err: any) {
+      console.error('Error al subir archivo:', err.message)
+      alert('Error en la carga: ' + err.message)
+    } finally {
+      uploadingDocKey.value = null
+    }
+  }
+}
+
+// Remover archivo de la carpeta
+const removerArchivo = async (docKey: string) => {
+  if (!selectedTramite.value) return
+  if (confirm(`¿Estás seguro de eliminar el archivo adjunto para ${docLabels[docKey]}?`)) {
+    if (selectedTramite.value.archivos_formularios) {
+      delete selectedTramite.value.archivos_formularios[docKey]
+    }
+    selectedTramite.value.checklist_documentos[docKey] = false
+
+    const prog = calcularProgreso(selectedTramite.value.checklist_documentos)
+    if (prog === 100) {
+      selectedTramite.value.estado_tramite = 'finalizado'
+    } else if (prog > 0) {
+      selectedTramite.value.estado_tramite = 'en_proceso'
+    } else {
+      selectedTramite.value.estado_tramite = 'pendiente'
+    }
+
+    await handleSaveTramite()
+  }
 }
 
 // Guardar los datos del trámite
@@ -184,7 +323,7 @@ const handleSaveTramite = async () => {
   if (authStore.isDemoMode) {
     setTimeout(() => {
       updatingTramite.value = null
-      successMsg.value = 'Trámite actualizado correctamente (Demo)'
+      successMsg.value = 'Trámite y cliente guardados localmente (Demo)'
       setTimeout(() => { successMsg.value = null }, 3000)
     }, 800)
   } else {
@@ -194,7 +333,10 @@ const handleSaveTramite = async () => {
         .update({
           checklist_documentos: selectedTramite.value.checklist_documentos,
           estado_tramite: selectedTramite.value.estado_tramite,
-          costo_transferencia: selectedTramite.value.costo_transferencia
+          costo_transferencia: selectedTramite.value.costo_transferencia,
+          cliente_nombre: selectedTramite.value.cliente_nombre,
+          cliente_dni: selectedTramite.value.cliente_dni,
+          archivos_formularios: selectedTramite.value.archivos_formularios
         })
         .eq('id', selectedTramite.value.id)
       
@@ -355,6 +497,42 @@ const formatMoneda = (val: number) => {
             </div>
           </Transition>
 
+          <!-- Datos del Cliente y Ubicación del Trámite -->
+          <div class="p-4 rounded-xl bg-slate-900/40 border border-slate-800 space-y-4">
+            <h3 class="text-xs font-bold text-slate-400 uppercase tracking-wider">Datos del Cliente & Jurisdicción</h3>
+            
+            <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              <div>
+                <label class="block text-[10px] font-bold text-slate-450 uppercase mb-1">Nombre Completo del Cliente</label>
+                <input 
+                  v-model="selectedTramite.cliente_nombre" 
+                  type="text"
+                  placeholder="Ej: Juan Pérez"
+                  class="w-full px-3 py-2 bg-slate-950 border border-slate-800 rounded-lg focus:border-emerald-500 outline-none text-gray-100 text-xs transition-all"
+                />
+              </div>
+              <div>
+                <label class="block text-[10px] font-bold text-slate-455 uppercase mb-1">DNI / CUIT del Cliente</label>
+                <input 
+                  v-model="selectedTramite.cliente_dni" 
+                  type="text"
+                  placeholder="Ej: 30.123.456"
+                  class="w-full px-3 py-2 bg-slate-950 border border-slate-800 rounded-lg focus:border-emerald-500 outline-none text-gray-100 text-xs transition-all"
+                />
+              </div>
+            </div>
+
+            <div>
+              <label class="block text-[10px] font-bold text-slate-450 uppercase mb-1">Provincia de Radicación (Jurisdicción)</label>
+              <select 
+                v-model="jurisdiccionSelected"
+                class="w-full px-3 py-2 bg-slate-950 border border-slate-800 rounded-lg focus:border-emerald-500 outline-none text-slate-300 text-xs transition-all"
+              >
+                <option v-for="j in jurisdicciones" :key="j.id" :value="j.id">{{ j.nombre }}</option>
+              </select>
+            </div>
+          </div>
+
           <!-- Input Costo de Transferencia -->
           <div class="p-4 rounded-xl bg-slate-900/40 border border-slate-800 space-y-2">
             <label class="block text-xs font-semibold text-slate-400 uppercase tracking-wider">Costo Estimado de Transferencia (ARS)</label>
@@ -370,54 +548,185 @@ const formatMoneda = (val: number) => {
             </div>
           </div>
 
-          <!-- Checklist de Documentos con Switches Animados -->
+          <!-- Checklist de Documentos con Switches e Inputs de Archivo -->
           <div class="space-y-4">
-            <h3 class="text-xs font-bold text-slate-400 uppercase tracking-wider px-1">Checklist de Documentación de Transferencia</h3>
+            <h3 class="text-xs font-bold text-slate-400 uppercase tracking-wider px-1">Checklist de Documentación & Archivos Cargados</h3>
             
-            <div class="space-y-2.5">
+            <div class="space-y-3.5">
               <div 
                 v-for="(label, key) in docLabels" 
                 :key="key"
-                @click="toggleDoc(key)"
-                class="p-4 rounded-xl bg-slate-900/60 border border-slate-800/80 hover:border-slate-700 transition-all flex items-center justify-between cursor-pointer group"
+                class="p-4 rounded-xl bg-slate-900/60 border border-slate-800/80 hover:border-slate-805 transition-all flex flex-col gap-3 group"
               >
-                <div class="flex items-center gap-3">
-                  <div 
-                    :class="[
-                      'p-2 rounded-lg transition-all',
-                      selectedTramite.checklist_documentos[key] 
-                        ? 'bg-emerald-500/10 text-emerald-400' 
-                        : 'bg-slate-950 text-slate-600'
-                    ]"
-                  >
-                    <CheckCircle2 v-if="selectedTramite.checklist_documentos[key]" class="w-4 h-4" />
-                    <HelpCircle v-else class="w-4 h-4" />
+                <div class="flex items-center justify-between">
+                  <div class="flex items-center gap-3">
+                    <div 
+                      @click="toggleDoc(key)"
+                      :class="[
+                        'p-2 rounded-lg transition-all cursor-pointer',
+                        selectedTramite.checklist_documentos[key] 
+                          ? 'bg-emerald-500/10 text-emerald-400' 
+                          : 'bg-slate-950 text-slate-600'
+                      ]"
+                    >
+                      <CheckCircle2 v-if="selectedTramite.checklist_documentos[key]" class="w-4 h-4" />
+                      <HelpCircle v-else class="w-4 h-4" />
+                    </div>
+                    <span 
+                      @click="toggleDoc(key)"
+                      :class="[
+                        'text-sm font-semibold transition-all cursor-pointer',
+                        selectedTramite.checklist_documentos[key] ? 'text-slate-200' : 'text-slate-400 group-hover:text-slate-350'
+                      ]"
+                    >
+                      {{ label }}
+                    </span>
                   </div>
-                  <span 
+
+                  <!-- Control Switch Estilizado -->
+                  <div 
+                    @click="toggleDoc(key)"
                     :class="[
-                      'text-sm font-semibold transition-all',
-                      selectedTramite.checklist_documentos[key] ? 'text-slate-200' : 'text-slate-400 group-hover:text-slate-300'
+                      'w-11 h-6 rounded-full p-0.5 transition-all duration-300 cursor-pointer',
+                      selectedTramite.checklist_documentos[key] ? 'bg-emerald-500' : 'bg-slate-850 border border-slate-700'
                     ]"
                   >
-                    {{ label }}
-                  </span>
+                    <div 
+                      :class="[
+                        'w-5 h-5 rounded-full bg-slate-950 transition-all duration-300 shadow-md transform',
+                        selectedTramite.checklist_documentos[key] ? 'translate-x-5 bg-slate-950' : 'translate-x-0 bg-slate-600'
+                      ]"
+                    ></div>
+                  </div>
                 </div>
 
-                <!-- Control Switch Estilizado -->
-                <div 
-                  :class="[
-                    'w-11 h-6 rounded-full p-0.5 transition-all duration-300',
-                    selectedTramite.checklist_documentos[key] ? 'bg-emerald-500' : 'bg-slate-850 border border-slate-700'
-                  ]"
-                >
-                  <div 
-                    :class="[
-                      'w-5 h-5 rounded-full bg-slate-950 transition-all duration-300 shadow-md transform',
-                      selectedTramite.checklist_documentos[key] ? 'translate-x-5 bg-slate-950' : 'translate-x-0 bg-slate-600'
-                    ]"
-                  ></div>
+                <!-- Sección del Archivo Real Cargado -->
+                <div class="flex items-center justify-between border-t border-slate-950 pt-2.5 text-xs">
+                  <div v-if="selectedTramite.archivos_formularios?.[key]" class="flex items-center gap-2 text-cyan-400 font-semibold truncate max-w-[70%]">
+                    <FileText class="w-4 h-4 shrink-0 text-cyan-400" />
+                    <span class="truncate" :title="selectedTramite.archivos_formularios[key].nombre">{{ selectedTramite.archivos_formularios[key].nombre }}</span>
+                    <span class="text-[9px] text-slate-500 font-normal">({{ selectedTramite.archivos_formularios[key].fecha }})</span>
+                  </div>
+                  
+                  <div v-else class="text-slate-600 flex items-center gap-1.5">
+                    <AlertCircle class="w-3.5 h-3.5 text-slate-500" />
+                    <span>Sin archivo cargado</span>
+                  </div>
+
+                  <!-- Botones de Acción sobre el archivo -->
+                  <div class="flex items-center gap-2">
+                    <div v-if="selectedTramite.archivos_formularios?.[key]" class="flex gap-2">
+                      <a 
+                        :href="selectedTramite.archivos_formularios[key].url"
+                        target="_blank"
+                        class="px-2 py-1 bg-slate-950 border border-slate-800 hover:border-cyan-500/40 text-cyan-400 text-[10px] font-bold rounded"
+                      >
+                        Ver/Descargar
+                      </a>
+                      <button 
+                        @click="removerArchivo(key)"
+                        class="px-2 py-1 bg-slate-950 border border-slate-800 hover:border-rose-500/40 text-rose-400 text-[10px] font-bold rounded cursor-pointer"
+                      >
+                        Remover
+                      </button>
+                    </div>
+                    
+                    <label v-else-if="uploadingDocKey !== key" class="px-2.5 py-1 bg-slate-950 border border-slate-800 hover:border-emerald-500/40 text-slate-400 hover:text-emerald-400 text-[10px] font-bold rounded cursor-pointer transition-colors">
+                      <span>Cargar Archivo</span>
+                      <input 
+                        type="file" 
+                        accept=".pdf,.png,.jpg,.jpeg" 
+                        class="hidden" 
+                        @change="handleFileUpload($event, key)"
+                      />
+                    </label>
+                    <span v-else class="text-xs text-slate-500 font-semibold flex items-center gap-1">
+                      <RefreshCw class="w-3 h-3 animate-spin text-emerald-400" />
+                      <span>Cargando...</span>
+                    </span>
+                  </div>
                 </div>
               </div>
+            </div>
+          </div>
+
+          <!-- Directorio de Trámites y Enlaces Oficiales (Argentina - DNRPA) -->
+          <div class="p-4 rounded-xl bg-slate-950/40 border border-slate-900 space-y-4">
+            <h4 class="text-xs font-bold text-white uppercase tracking-widest flex items-center gap-1.5">
+              <span>Trámites Rápidos & Enlaces Oficiales (DNRPA / AFIP)</span>
+            </h4>
+            
+            <p class="text-[10px] text-slate-400 leading-relaxed">
+              Solicita formularios, verifica la radicación de patentes y accede a turnos de registros oficiales nacionales y locales:
+            </p>
+
+            <div class="grid grid-cols-1 sm:grid-cols-2 gap-2 text-[10px] font-bold font-sans">
+              <!-- Botones Nacionales -->
+              <a href="https://www.dnrpa.gov.ar/portalciudadano/tramite/08-digital" target="_blank" class="p-2.5 bg-slate-900 border border-slate-850 hover:border-cyan-500/30 rounded-lg flex justify-between items-center group transition-all text-slate-350">
+                <span>DNRPA: Iniciar 08 Digital</span>
+                <ExternalLink class="w-3.5 h-3.5 text-slate-500 group-hover:text-cyan-400" />
+              </a>
+
+              <a href="https://www.dnrpa.gov.ar/portalciudadano/radicacion-por-patente" target="_blank" class="p-2.5 bg-slate-900 border border-slate-850 hover:border-cyan-500/30 rounded-lg flex justify-between items-center group transition-all text-slate-355">
+                <span>DNRPA: Radicación por Patente</span>
+                <ExternalLink class="w-3.5 h-3.5 text-slate-500 group-hover:text-cyan-400" />
+              </a>
+
+              <a href="https://www.dnrpa.gov.ar/portalciudadano/informes-online" target="_blank" class="p-2.5 bg-slate-900 border border-slate-850 hover:border-cyan-500/30 rounded-lg flex justify-between items-center group transition-all text-slate-350">
+                <span>DNRPA: Pedido de Informe de Dominio</span>
+                <ExternalLink class="w-3.5 h-3.5 text-slate-500 group-hover:text-cyan-400" />
+              </a>
+
+              <a href="https://www.argentina.gob.ar/seguridadvial/licenciadeconducir/cenat" target="_blank" class="p-2.5 bg-slate-900 border border-slate-850 hover:border-cyan-500/30 rounded-lg flex justify-between items-center group transition-all text-slate-350">
+                <span>CENAT: Libre Deuda de Infracciones</span>
+                <ExternalLink class="w-3.5 h-3.5 text-slate-500 group-hover:text-cyan-400" />
+              </a>
+
+              <a href="https://www.afip.gob.ar/coti/" target="_blank" class="p-2.5 bg-slate-900 border border-slate-850 hover:border-cyan-500/30 rounded-lg flex justify-between items-center group transition-all text-slate-350">
+                <span>AFIP: Solicitar Certificado COTI</span>
+                <ExternalLink class="w-3.5 h-3.5 text-slate-500 group-hover:text-cyan-400" />
+              </a>
+
+              <!-- Botones Locales Dinámicos según Jurisdicción -->
+              <!-- Buenos Aires -->
+              <a v-if="jurisdiccionSelected === 'buenos_aires'" href="https://vpa.mseg.gba.gov.ar/" target="_blank" class="p-2.5 bg-slate-900 border border-slate-850 hover:border-cyan-500/30 rounded-lg flex justify-between items-center group transition-all text-cyan-400">
+                <span>VPA: Verificación Policial GBA</span>
+                <ExternalLink class="w-3.5 h-3.5 text-slate-500 group-hover:text-cyan-400" />
+              </a>
+              <a v-if="jurisdiccionSelected === 'buenos_aires'" href="https://web.arba.gov.ar/" target="_blank" class="p-2.5 bg-slate-900 border border-slate-850 hover:border-cyan-500/30 rounded-lg flex justify-between items-center group transition-all text-cyan-400">
+                <span>ARBA: Patentes e Impuestos</span>
+                <ExternalLink class="w-3.5 h-3.5 text-slate-500 group-hover:text-cyan-400" />
+              </a>
+
+              <!-- Santa Fe -->
+              <a v-if="jurisdiccionSelected === 'santa_fe'" href="https://www.santafe.gov.ar/index.php/tramites/modulopublico/detalle?id=111527" target="_blank" class="p-2.5 bg-slate-900 border border-slate-850 hover:border-cyan-500/30 rounded-lg flex justify-between items-center group transition-all text-cyan-400">
+                <span>VPF: Verificación Policial Santa Fe</span>
+                <ExternalLink class="w-3.5 h-3.5 text-slate-500 group-hover:text-cyan-400" />
+              </a>
+              <a v-if="jurisdiccionSelected === 'santa_fe'" href="https://www.santafe.gov.ar/api" target="_blank" class="p-2.5 bg-slate-900 border border-slate-850 hover:border-cyan-500/30 rounded-lg flex justify-between items-center group transition-all text-cyan-400">
+                <span>API Santa Fe: Impuesto Patente</span>
+                <ExternalLink class="w-3.5 h-3.5 text-slate-500 group-hover:text-cyan-400" />
+              </a>
+
+              <!-- CABA -->
+              <a v-if="jurisdiccionSelected === 'caba'" href="https://verificacion.controlciudadano.gob.ar/" target="_blank" class="p-2.5 bg-slate-900 border border-slate-850 hover:border-cyan-500/30 rounded-lg flex justify-between items-center group transition-all text-cyan-400">
+                <span>Verificación Policial CABA</span>
+                <ExternalLink class="w-3.5 h-3.5 text-slate-500 group-hover:text-cyan-400" />
+              </a>
+              <a v-if="jurisdiccionSelected === 'caba'" href="https://www.agip.gob.ar/" target="_blank" class="p-2.5 bg-slate-900 border border-slate-850 hover:border-cyan-500/30 rounded-lg flex justify-between items-center group transition-all text-cyan-400">
+                <span>AGIP CABA: Patentes</span>
+                <ExternalLink class="w-3.5 h-3.5 text-slate-500 group-hover:text-cyan-400" />
+              </a>
+
+              <!-- Cordoba -->
+              <a v-if="jurisdiccionSelected === 'cordoba'" href="https://verificacionespoliciales.cba.gov.ar/" target="_blank" class="p-2.5 bg-slate-900 border border-slate-850 hover:border-cyan-500/30 rounded-lg flex justify-between items-center group transition-all text-cyan-400">
+                <span>Verificación Policial Córdoba</span>
+                <ExternalLink class="w-3.5 h-3.5 text-slate-500 group-hover:text-cyan-400" />
+              </a>
+              <a v-if="jurisdiccionSelected === 'cordoba'" href="https://www.rentascordoba.gob.ar/" target="_blank" class="p-2.5 bg-slate-900 border border-slate-850 hover:border-cyan-500/30 rounded-lg flex justify-between items-center group transition-all text-cyan-400">
+                <span>Rentas Córdoba: Patentes</span>
+                <ExternalLink class="w-3.5 h-3.5 text-slate-500 group-hover:text-cyan-400" />
+              </a>
             </div>
           </div>
 

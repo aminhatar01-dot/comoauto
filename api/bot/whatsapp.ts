@@ -32,6 +32,9 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     // 2. Obtener la configuración de WhatsApp del vendedor asignado (o canal de la agencia)
     let telefonoEmisor = '+5491100000000'
     let whatsappConectado = false
+    let apiUrl = ''
+    let apiToken = ''
+
     if (lead?.vendedor_asignado_id) {
       try {
         const { data: vendedorData } = await supabaseAdmin
@@ -43,6 +46,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           telefonoEmisor = vendedorData.telefono_whatsapp || telefonoEmisor
           const configConn = vendedorData.config_conexion_whatsapp || {}
           whatsappConectado = configConn.conectado || false
+          apiUrl = configConn.api_url || ''
+          apiToken = configConn.api_token || ''
         }
       } catch (err) {
         console.warn('No se pudo cargar la configuración de WhatsApp del vendedor asignado:', err)
@@ -64,27 +69,74 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       console.warn('Error al cargar config_bot en whatsapp endpoint, usando catálogo por defecto.', e)
     }
 
-    // 4. Seleccionar la plantilla de respuesta adecuada
-    let mensajeBot = ''
-    if (config.estrategia === 'financiacion') {
-      mensajeBot = `¡Hola ${nombre_cliente}! 🤖 Te escribo de ComoAuto por tu consulta sobre el *${auto_interes}*. Contamos con un plan de financiación express de hasta el 50% del valor del vehículo en cuotas fijas en pesos y pre-aprobado solo con tu DNI. ¿Te interesaría realizar una simulación rápida de tu cuota?`
-    } else if (config.estrategia === 'ofertas') {
-      mensajeBot = `¡Hola ${nombre_cliente}! 🤖 ¡Buenas noticias! Te escribo de ComoAuto. El *${auto_interes}* en el que te interesaste cuenta con una promoción exclusiva de semana: ¡Transferencia y gestoría bonificada 100%! ¿Te gustaría reservar una visita en el salón para verlo hoy?`
-    } else {
-      // catálogo
-      mensajeBot = `¡Hola ${nombre_cliente}! 🤖 Te escribo de ComoAuto. Vimos tu interés en el *${auto_interes}*. Te adjunto la ficha técnica: Precio y detalles disponibles en salón para entrega inmediata. ¿Te interesaría pasar a verlo o programar un test drive?`
+    // 4. Seleccionar la plantilla de respuesta adecuada o utilizar el mensaje personalizado (re-marketing)
+    let mensajeBot = req.body.mensaje_custom || ''
+    if (!mensajeBot) {
+      if (config.estrategia === 'financiacion') {
+        mensajeBot = `¡Hola ${nombre_cliente}! 🤖 Te escribo de ComoAuto por tu consulta sobre el *${auto_interes}*. Contamos con un plan de financiación express de hasta el 50% del valor del vehículo en cuotas fijas en pesos y pre-aprobado solo con tu DNI. ¿Te interesaría realizar una simulación rápida de tu cuota?`
+      } else if (config.estrategia === 'ofertas') {
+        mensajeBot = `¡Hola ${nombre_cliente}! 🤖 ¡Buenas noticias! Te escribo de ComoAuto. El *${auto_interes}* en el que te interesaste cuenta con una promoción exclusiva de semana: ¡Transferencia y gestoría bonificada 100%! ¿Te gustaría reservar una visita en el salón para verlo hoy?`
+      } else {
+        mensajeBot = `¡Hola ${nombre_cliente}! 🤖 Te escribo de ComoAuto. Vimos tu interés en el *${auto_interes}*. Te adjunto la ficha técnica: Precio y detalles disponibles en salón para entrega inmediata. ¿Te interesaría pasar a verlo o programar un test drive?`
+      }
     }
 
-    console.log(`[WhatsApp Bot] Despachando mensaje a ${nombre_cliente} (${telefono_whatsapp}) desde canal del vendedor ${telefonoEmisor} (Conectado: ${whatsappConectado}) bajo estrategia: ${config.estrategia}`)
+    // 5. Envío real a través de la pasarela de WhatsApp si está configurada
+    let despachoRealExitoso = false
+    let respuestaPasarela = null
 
-    // 5. Añadir el mensaje de bot al historial
+    if (apiUrl && apiToken) {
+      try {
+        // Limpiar el teléfono de destino (eliminar signos no numéricos, dejar solo dígitos)
+        const telefonoDestinoLimpio = telefono_whatsapp.replace(/\D/g, '')
+        
+        let targetUrl = apiUrl.replace(/\/$/, '')
+        if (!targetUrl.includes('/message/sendText')) {
+          targetUrl += '/message/sendText'
+        }
+
+        console.log(`[WhatsApp API Real] Enviando a ${targetUrl} para número ${telefonoDestinoLimpio}`)
+
+        const response = await fetch(targetUrl, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'apikey': apiToken
+          },
+          body: JSON.stringify({
+            number: telefonoDestinoLimpio,
+            options: {
+              delay: 1000,
+              presence: 'composing'
+            },
+            textMessage: {
+              text: mensajeBot
+            }
+          })
+        })
+
+        respuestaPasarela = await response.json()
+        if (response.ok) {
+          despachoRealExitoso = true
+          console.log('[WhatsApp API Real] Despacho exitoso de pasarela.')
+        } else {
+          console.warn('[WhatsApp API Real] Error en respuesta de pasarela:', respuestaPasarela)
+        }
+      } catch (err: any) {
+        console.error('[WhatsApp API Real] Excepción en despacho real:', err.message)
+      }
+    }
+
+    console.log(`[WhatsApp Bot] Despachando mensaje a ${nombre_cliente} (${telefono_whatsapp}) desde canal del vendedor ${telefonoEmisor} (Conectado: ${whatsappConectado}) bajo estrategia: ${config.estrategia}. Envío real por API: ${despachoRealExitoso}`)
+
+    // 6. Añadir el mensaje de bot al historial
     historial.push({
       emisor: 'bot',
       mensaje: mensajeBot,
       fecha: new Date().toISOString()
     })
 
-    // 6. Actualizar el lead en la base de datos Supabase
+    // 7. Actualizar el lead en la base de datos Supabase
     const { error: updateError } = await supabaseAdmin
       .from('leads')
       .update({
@@ -97,11 +149,15 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
     return res.status(200).json({
       success: true,
-      mensaje: 'Mensaje de WhatsApp automático despachado correctamente.',
+      mensaje: despachoRealExitoso 
+        ? 'Mensaje de WhatsApp real despachado por pasarela.' 
+        : 'Mensaje de WhatsApp automático despachado correctamente (Simulado).',
       estrategia: config.estrategia,
       texto_enviado: mensajeBot,
       canal_emisor: telefonoEmisor,
-      canal_conectado: whatsappConectado
+      canal_conectado: whatsappConectado,
+      envio_real: despachoRealExitoso,
+      respuesta_pasarela: respuestaPasarela
     })
 
   } catch (err: any) {

@@ -38,11 +38,27 @@ const vendedorCanales = ref({
   whatsappConectado: false,
   whatsappNumero: '',
   instagramUser: '',
-  redesPass: ''
+  tiktokUser: '',
+  redesPass: '',
+  whatsappApiUrl: '',
+  whatsappApiToken: ''
 })
 const showQR = ref(false)
 const savingCanales = ref(false)
+const isConnectingWhatsApp = ref(false)
+const qrCodeImage = ref('')
 
+// Estados de Re-marketing
+const activeTab = ref('inbox') // 'inbox' | 'remarketing'
+const selectedRemarketingLeads = ref<string[]>([])
+const remarketingFilterEstado = ref('todos')
+const remarketingFilterClasificacion = ref('todos')
+const remarketingSearch = ref('')
+const remarketingTemplate = ref('financiacion') // 'financiacion' | 'nuevos' | 'bono' | 'custom'
+const customTemplateText = ref('')
+const isSendingCampaign = ref(false)
+const campaignProgress = ref(0)
+const campaignTotal = ref(0)
 
 // Vendedores de la agencia para asignación (ruteo rotativo)
 const vendedores = ref([
@@ -108,10 +124,13 @@ onMounted(async () => {
   await loadVendedorCanales()
 })
 
-// Filtrado de leads por vendedor para estricta privacidad
+// Filtrado de leads por vendedor para estricta privacidad (Bandeja Inbox)
 const filteredLeads = computed(() => {
   return leads.value.filter(lead => {
-    // Si el usuario logueado es vendedor, solo puede ver sus propios leads
+    // Excluir leads archivados o vendidos en la bandeja inbox para mantenerla limpia
+    if (lead.estado_lead === 'no_interesado' || lead.estado_lead === 'vendido') return false
+
+    // Privacidad de vendedor
     if (authStore.profile?.rol === 'vendedor') {
       if (authStore.isDemoMode) {
         return lead.vendedor_nombre === authStore.profile.nombre
@@ -123,15 +142,39 @@ const filteredLeads = computed(() => {
   })
 })
 
+// Leads filtrados para Re-marketing e Historial
+const filteredRemarketingLeads = computed(() => {
+  return leads.value.filter(lead => {
+    // Privacidad de vendedor
+    if (authStore.profile?.rol === 'vendedor') {
+      if (authStore.isDemoMode) {
+        if (lead.vendedor_nombre !== authStore.profile.nombre) return false
+      } else {
+        if (lead.vendedor_asignado_id !== authStore.profile.id) return false
+      }
+    }
+
+    const matchesSearch = lead.nombre_cliente.toLowerCase().includes(remarketingSearch.value.toLowerCase()) ||
+                          lead.auto_interes.toLowerCase().includes(remarketingSearch.value.toLowerCase())
+    
+    const matchesEstado = remarketingFilterEstado.value === 'todos' || lead.estado_lead === remarketingFilterEstado.value
+    const matchesClasif = remarketingFilterClasificacion.value === 'todos' || lead.clasificacion === remarketingFilterClasificacion.value
+
+    return matchesSearch && matchesEstado && matchesClasif
+  })
+})
+
 // Cargar canales del vendedor desde Supabase/Local
 const loadVendedorCanales = async () => {
   if (authStore.isDemoMode || !authStore.profile) {
-    // Modo Demo: Cargar datos iniciales privados del vendedor si corresponde
     vendedorCanales.value = {
       whatsappConectado: authStore.profile?.rol === 'vendedor' ? true : false,
       whatsappNumero: authStore.profile?.rol === 'vendedor' ? '+54 9 341 555-001' : '',
       instagramUser: authStore.profile?.rol === 'vendedor' ? '@vendedor.comoauto' : '',
-      redesPass: 'Rosariocentral1889$'
+      tiktokUser: authStore.profile?.rol === 'vendedor' ? '@vendedor.tiktok' : '',
+      redesPass: 'Rosariocentral1889$',
+      whatsappApiUrl: 'https://api.evolution.comoauto.site/v1',
+      whatsappApiToken: 'my-super-secret-token-1234'
     }
     return
   }
@@ -152,7 +195,10 @@ const loadVendedorCanales = async () => {
         whatsappConectado: whatsapp.conectado || false,
         whatsappNumero: whatsapp.numero || data.telefono_whatsapp || '',
         instagramUser: redes.instagram?.usuario || '',
-        redesPass: redes.instagram?.contrasena || ''
+        tiktokUser: redes.tiktok?.usuario || '',
+        redesPass: redes.instagram?.contrasena || '',
+        whatsappApiUrl: whatsapp.api_url || '',
+        whatsappApiToken: whatsapp.api_token || ''
       }
     }
   } catch (err) {
@@ -171,12 +217,15 @@ const guardarCanalesVendedor = async () => {
   const configWhatsApp = {
     conectado: vendedorCanales.value.whatsappConectado,
     numero: vendedorCanales.value.whatsappNumero,
-    qr_code: ''
+    qr_code: '',
+    api_url: vendedorCanales.value.whatsappApiUrl || '',
+    api_token: vendedorCanales.value.whatsappApiToken || ''
   }
   
   const configRedes = {
     facebook: { usuario: vendedorCanales.value.instagramUser, contrasena: vendedorCanales.value.redesPass },
-    instagram: { usuario: vendedorCanales.value.instagramUser, contrasena: vendedorCanales.value.redesPass }
+    instagram: { usuario: vendedorCanales.value.instagramUser, contrasena: vendedorCanales.value.redesPass },
+    tiktok: { usuario: vendedorCanales.value.tiktokUser, contrasena: vendedorCanales.value.redesPass }
   }
 
   if (authStore.isDemoMode) {
@@ -217,9 +266,39 @@ const simularEscaneoQR = () => {
 const desconectarWhatsApp = () => {
   vendedorCanales.value.whatsappConectado = false
   vendedorCanales.value.whatsappNumero = ''
+  qrCodeImage.value = ''
   alert('Sesión de WhatsApp cerrada.')
 }
 
+const obtenerQRReal = async () => {
+  if (!vendedorCanales.value.whatsappApiUrl || !vendedorCanales.value.whatsappApiToken) {
+    showQR.value = true
+    return
+  }
+
+  isConnectingWhatsApp.value = true
+  qrCodeImage.value = ''
+  showQR.value = true
+
+  try {
+    const response = await fetch(`${vendedorCanales.value.whatsappApiUrl}/instance/connect`, {
+      method: 'GET',
+      headers: {
+        'apikey': vendedorCanales.value.whatsappApiToken
+      }
+    })
+    const data = await response.json()
+    if (data && data.qrcode) {
+      qrCodeImage.value = data.qrcode
+    } else {
+      qrCodeImage.value = ''
+    }
+  } catch (err) {
+    console.warn('Conexión real no disponible en esta URL de test. Utilizando generador de QR integrado.', err)
+  } finally {
+    isConnectingWhatsApp.value = false
+  }
+}
 
 const loadVehiculos = async () => {
   if (authStore.isDemoMode) return
@@ -238,7 +317,6 @@ const loadVehiculos = async () => {
 const loadLeads = async () => {
   loading.value = true
   if (authStore.isDemoMode) {
-    // Cargar leads simulados
     leads.value = [
       {
         id: 'lead-1',
@@ -281,6 +359,33 @@ const loadLeads = async () => {
         ],
         fecha_creacion: new Date(Date.now() - 172800000).toISOString(),
         clasificacion: 'Caliente'
+      },
+      {
+        id: 'lead-4',
+        nombre_cliente: 'Aníbal Fernández',
+        telefono_whatsapp: '+5493419998887',
+        estado_lead: 'no_interesado',
+        auto_interes: 'Volkswagen Vento',
+        vendedor_nombre: 'Laura Fernández',
+        historial_conversacion: [
+          { emisor: 'cliente', mensaje: 'Hola, me interesa el Vento pero ya compré otro auto. Gracias.', fecha: new Date(Date.now() - 5 * 86400000).toISOString() }
+        ],
+        fecha_creacion: new Date(Date.now() - 5 * 86400000).toISOString(),
+        clasificacion: 'Frio'
+      },
+      {
+        id: 'lead-5',
+        nombre_cliente: 'Mariana Pérez',
+        telefono_whatsapp: '+549341555987',
+        estado_lead: 'vendido',
+        auto_interes: 'Honda Civic',
+        vendedor_nombre: 'Amin Határ',
+        historial_conversacion: [
+          { emisor: 'cliente', mensaje: 'Hola, quiero reservar el Honda Civic.', fecha: new Date(Date.now() - 6 * 86400000).toISOString() },
+          { emisor: 'bot', mensaje: '¡Hola Mariana! Perfecto, te enviamos los datos de cuenta.', fecha: new Date(Date.now() - 6 * 86400000).toISOString() }
+        ],
+        fecha_creacion: new Date(Date.now() - 6 * 86400000).toISOString(),
+        clasificacion: 'Caliente'
       }
     ]
     if (leads.value.length > 0 && !selectedLead.value) {
@@ -297,17 +402,15 @@ const loadLeads = async () => {
       
       if (error) throw error
       if (data) {
-        // Mapear clasificación basada en el historial en modo online
         leads.value = data.map(item => {
           let clasif = 'Tibio'
           const histStr = JSON.stringify(item.historial_conversacion)
           if (histStr.includes('precio') || histStr.includes('comprar') || histStr.includes('permuta')) {
             clasif = 'Caliente'
-          } else if (histStr.includes('no gracias') || histStr.includes('mas adelante')) {
+          } else if (histStr.includes('no gracias') || histStr.includes('mas adelante') || item.estado_lead === 'no_interesado') {
             clasif = 'Frio'
           }
           
-          // Buscar auto de interés en el mensaje si no está explícito
           let auto = 'Indeterminado'
           for (const v of vehiculosAgencia.value) {
             if (histStr.toLowerCase().includes(v.marca.toLowerCase()) || histStr.toLowerCase().includes(v.modelo.toLowerCase())) {
@@ -315,14 +418,15 @@ const loadLeads = async () => {
               break
             }
           }
+          if (auto === 'Indeterminado' && item.auto_interes) {
+            auto = item.auto_interes
+          }
 
-          // Asignar nombre del vendedor basado en el ID o distribución rotativa inicial
           let vendNombre = 'Bot Autónomo'
           if (item.vendedor_asignado_id) {
             const v = vendedores.value.find(vend => vend.id === item.vendedor_asignado_id)
             if (v) vendNombre = v.nombre
           } else {
-            // Asignación simulada para registros huérfanos
             const vIndex = (item.nombre_cliente.charCodeAt(0) || 0) % vendedores.value.length
             vendNombre = vendedores.value[vIndex].nombre
           }
@@ -341,24 +445,20 @@ const loadLeads = async () => {
   }
 }
 
-// Bot Cazador: Procesar entrada de red social localmente o mediante la API
+// Bot Cazador
 const handleHuntLead = async () => {
   if (!rawSocialText.value.trim()) return
   processingBot.value = true
   
   if (authStore.isDemoMode) {
-    // Simular procesamiento del bot
     setTimeout(() => {
-      // Intentar extraer nombre
       const nameMatch = rawSocialText.value.match(/(?:soy|nombre es|me llamo)\s+([A-Z][a-z]+\s+[A-Z][a-z]+)/i) ||
                         rawSocialText.value.match(/^([A-Z][a-z]+\s+[A-Z][a-z]+)/)
       const nombre = nameMatch ? nameMatch[1] : 'Cliente Extraído'
       
-      // Intentar extraer teléfono
       const telMatch = rawSocialText.value.match(/(\+?\d{2,4}\s?\d{3,4}[-\s]?\d{4})/g)
       const tel = telMatch ? telMatch[0] : '+54911' + Math.floor(10000000 + Math.random() * 90000000)
 
-      // Determinar vehículo de interés
       let auto = 'Ford Focus 2017'
       for (const v of vehiculosAgencia.value) {
         if (rawSocialText.value.toLowerCase().includes(v.marca.toLowerCase()) || rawSocialText.value.toLowerCase().includes(v.modelo.toLowerCase())) {
@@ -367,7 +467,6 @@ const handleHuntLead = async () => {
         }
       }
 
-      // Si es vendedor, asignárselo a sí mismo de manera privada, sino elegir uno rotativo
       const randomVendedor = vendedores.value[Math.floor(Math.random() * vendedores.value.length)]
       const vendedorAsignado = authStore.profile?.rol === 'vendedor' ? authStore.profile.nombre : randomVendedor.nombre
 
@@ -391,7 +490,6 @@ const handleHuntLead = async () => {
       processingBot.value = false
     }, 1500)
   } else {
-    // LLAMADA AL ENDPOINT REAL /api/bot/hunt
     try {
       const response = await fetch('/api/bot/hunt', {
         method: 'POST',
@@ -415,17 +513,15 @@ const handleHuntLead = async () => {
   }
 }
 
-// Iniciar contacto automático por WhatsApp (Integración Webhook simulada)
+// Iniciar contacto automático por WhatsApp
 const handleStartWhatsApp = async (lead: any) => {
   sendingWhatsApp.value = lead.id
   
   if (authStore.isDemoMode) {
-    // Simular webhook y despacho de ficha por WhatsApp
     setTimeout(() => {
       lead.estado_lead = 'en_contacto'
       const autoObj = vehiculosAgencia.value.find(v => lead.auto_interes.toLowerCase().includes(v.modelo.toLowerCase())) || vehiculosAgencia.value[0]
       
-      // Seleccionar plantilla basada en la estrategia activa del bot
       let mensajeBot = ''
       if (configBot.value.estrategia === 'financiacion') {
         mensajeBot = `¡Hola ${lead.nombre_cliente}! 🤖 Te escribo de ComoAuto por tu consulta sobre el *${lead.auto_interes}*. Contamos con un plan de financiación express de hasta el 50% del valor del vehículo en cuotas fijas en pesos y pre-aprobado solo con tu DNI. ¿Te interesaría realizar una simulación rápida de tu cuota?`
@@ -443,7 +539,6 @@ const handleStartWhatsApp = async (lead: any) => {
       
       sendingWhatsApp.value = null
       
-      // Simular una respuesta del cliente al cabo de 6 segundos
       setTimeout(() => {
         lead.historial_conversacion.push({
           emisor: 'cliente',
@@ -457,7 +552,6 @@ const handleStartWhatsApp = async (lead: any) => {
     }, 2000)
   } else {
     try {
-      // Envío real llamando a API Serverless
       const response = await fetch('/api/bot/whatsapp', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -478,6 +572,87 @@ const handleStartWhatsApp = async (lead: any) => {
       sendingWhatsApp.value = null
     }
   }
+}
+
+// Lógica de Re-marketing
+const toggleSelectLead = (leadId: string) => {
+  const index = selectedRemarketingLeads.value.indexOf(leadId)
+  if (index === -1) {
+    selectedRemarketingLeads.value.push(leadId)
+  } else {
+    selectedRemarketingLeads.value.splice(index, 1)
+  }
+}
+
+const toggleSelectAllLeads = () => {
+  if (selectedRemarketingLeads.value.length === filteredRemarketingLeads.value.length) {
+    selectedRemarketingLeads.value = []
+  } else {
+    selectedRemarketingLeads.value = filteredRemarketingLeads.value.map(l => l.id)
+  }
+}
+
+const getMessagePreview = (lead: any) => {
+  if (!lead) return ''
+  let text = ''
+  if (remarketingTemplate.value === 'financiacion') {
+    text = `¡Hola {nombre_cliente}! 🤖 Te escribo de ComoAuto porque sabemos de tu interés en el *{auto_interes}*. Queremos recordarte que tenemos planes de financiación exclusiva para vos de hasta el 50% de la unidad, con mínimos requisitos. ¿Te gustaría que te contactemos para armarte un plan a tu medida?`
+  } else if (remarketingTemplate.value === 'nuevos') {
+    text = `¡Hola {nombre_cliente}! 🤖 ¡Ingresaron novedades en ComoAuto! Tenemos nuevos vehículos similares a tu búsqueda de *{auto_interes}*. Podés verlos en nuestro catálogo o responder a este mensaje para recibir la lista actualizada.`
+  } else if (remarketingTemplate.value === 'bono') {
+    text = `¡Hola {nombre_cliente}! 🤖 ¡Promoción especial! Si concretás la reserva del *{auto_interes}* esta semana, te bonificamos el 100% de la gestoría y transferencia. ¿Te gustaría agendar una visita al salón?`
+  } else {
+    text = customTemplateText.value || 'Hola {nombre_cliente}, te escribo por tu consulta sobre el {auto_interes}...'
+  }
+  return text.replace(/{nombre_cliente}/g, lead.nombre_cliente).replace(/{auto_interes}/g, lead.auto_interes)
+}
+
+const handleSendRemarketingCampaign = async () => {
+  if (selectedRemarketingLeads.value.length === 0) return
+  isSendingCampaign.value = true
+  campaignProgress.value = 0
+  campaignTotal.value = selectedRemarketingLeads.value.length
+
+  const leadsToSend = leads.value.filter(l => selectedRemarketingLeads.value.includes(l.id))
+
+  for (let i = 0; i < leadsToSend.length; i++) {
+    const lead = leadsToSend[i]
+    const mensajePersonalizado = getMessagePreview(lead)
+
+    if (authStore.isDemoMode) {
+      await new Promise(resolve => setTimeout(resolve, 800))
+      lead.estado_lead = 'en_contacto'
+      lead.historial_conversacion.push({
+        emisor: 'bot',
+        mensaje: mensajePersonalizado,
+        fecha: new Date().toISOString()
+      })
+    } else {
+      try {
+        await fetch('/api/bot/whatsapp', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            lead_id: lead.id,
+            nombre_cliente: lead.nombre_cliente,
+            telefono_whatsapp: lead.telefono_whatsapp,
+            auto_interes: lead.auto_interes,
+            mensaje_custom: mensajePersonalizado
+          })
+        })
+      } catch (err) {
+        console.error('Error enviando mensaje de re-marketing a', lead.nombre_cliente, err)
+      }
+    }
+    campaignProgress.value = i + 1
+  }
+
+  if (!authStore.isDemoMode) {
+    await loadLeads()
+  }
+  isSendingCampaign.value = false
+  selectedRemarketingLeads.value = []
+  alert(`Campaña finalizada con éxito. Se despacharon ${campaignTotal.value} mensajes de re-marketing.`)
 }
 
 const selectLead = (lead: any) => {
@@ -514,8 +689,24 @@ const formatFecha = (isoString: string) => {
       </button>
     </div>
 
-    <!-- Layout Grid -->
-    <div class="grid grid-cols-1 lg:grid-cols-12 gap-8">
+    <!-- Selector de Pestañas -->
+    <div class="flex gap-4 border-b border-slate-800 pb-3">
+      <button 
+        @click="activeTab = 'inbox'" 
+        :class="['px-4 py-2 text-sm font-bold rounded-xl transition-all cursor-pointer', activeTab === 'inbox' ? 'bg-emerald-500 text-slate-950 shadow' : 'bg-slate-900/60 text-slate-400 border border-slate-800 hover:text-white']"
+      >
+        Bandeja de Entrada e Ingesta
+      </button>
+      <button 
+        @click="activeTab = 'remarketing'" 
+        :class="['px-4 py-2 text-sm font-bold rounded-xl transition-all cursor-pointer', activeTab === 'remarketing' ? 'bg-emerald-500 text-slate-950 shadow' : 'bg-slate-900/60 text-slate-400 border border-slate-800 hover:text-white']"
+      >
+        Historial de Leads & Re-marketing
+      </button>
+    </div>
+
+    <!-- Layout Grid para Bandeja de Entrada e Ingesta -->
+    <div v-if="activeTab === 'inbox'" class="grid grid-cols-1 lg:grid-cols-12 gap-8">
       
       <!-- Panel de Control y Captura (Izquierda - 4/12) -->
       <div class="lg:col-span-4 space-y-6">
@@ -644,21 +835,41 @@ const formatFecha = (isoString: string) => {
 
             <!-- Estado Desconectado - QR o Input -->
             <div v-else class="space-y-3">
+              <!-- QR Code Container -->
               <div v-if="showQR" class="flex flex-col items-center justify-center p-3 bg-white rounded-xl max-w-[140px] mx-auto relative group shadow">
-                <!-- QR Code Simulador -->
-                <div class="w-28 h-28 bg-slate-100 flex items-center justify-center text-slate-800 font-mono text-[8px] text-center border border-slate-300">
+                <!-- QR Real (si viene de API) -->
+                <img v-if="qrCodeImage" :src="qrCodeImage" class="w-28 h-28 object-contain" alt="QR Code Real" />
+                <!-- QR Code Simulador (Fallback) -->
+                <div v-else class="w-28 h-28 bg-slate-100 flex items-center justify-center text-slate-800 font-mono text-[8px] text-center border border-slate-300">
                   <div class="grid grid-cols-4 gap-1 p-2">
                     <div v-for="i in 16" :key="i" :class="['w-5 h-5 rounded-xs', (i%3==0 || i%5==0) ? 'bg-slate-950' : 'bg-white']"></div>
                   </div>
                 </div>
-                <span class="text-[8px] text-slate-650 mt-1.5 font-bold">Escanea con WhatsApp</span>
+                <span class="text-[8px] text-slate-650 mt-1.5 font-bold">{{ isConnectingWhatsApp ? 'Cargando...' : 'Escanea con WhatsApp' }}</span>
                 <!-- Hover simulación -->
                 <div 
                   @click="simularEscaneoQR"
                   class="absolute inset-0 bg-slate-950/90 backdrop-blur-xs flex items-center justify-center opacity-0 group-hover:opacity-100 transition-all duration-300 rounded-xl cursor-pointer"
                 >
-                  <span class="text-[9px] text-emerald-400 font-bold text-center px-2">Click para escanear QR 📱</span>
+                  <span class="text-[9px] text-emerald-400 font-bold text-center px-2">Click para simular escaneo 📱</span>
                 </div>
+              </div>
+
+              <!-- Inputs de Configuración de API de WhatsApp (Real) -->
+              <div class="space-y-2.5 p-3.5 bg-slate-950/50 border border-slate-850 rounded-xl">
+                <span class="block text-[9px] text-slate-500 font-bold uppercase">Configuración de Pasarela Real</span>
+                <input 
+                  v-model="vendedorCanales.whatsappApiUrl"
+                  type="text" 
+                  placeholder="URL de Evolution API (ej: https://api...)"
+                  class="w-full px-2.5 py-2 bg-slate-950 border border-slate-800 rounded-lg text-[10px] text-slate-200 outline-none focus:border-cyan-500"
+                />
+                <input 
+                  v-model="vendedorCanales.whatsappApiToken"
+                  type="password" 
+                  placeholder="Token API Key"
+                  class="w-full px-2.5 py-2 bg-slate-950 border border-slate-800 rounded-lg text-[10px] text-slate-200 outline-none focus:border-cyan-500"
+                />
               </div>
 
               <div class="flex gap-2">
@@ -669,7 +880,7 @@ const formatFecha = (isoString: string) => {
                   class="flex-1 px-3 py-2 bg-slate-950 border border-slate-800 rounded-lg text-xs text-slate-200 outline-none focus:border-cyan-500"
                 />
                 <button 
-                  @click="showQR = !showQR"
+                  @click="obtenerQRReal"
                   class="px-2.5 py-2 bg-slate-900 border border-slate-800 hover:border-cyan-500/40 text-xs font-bold text-slate-350 hover:text-cyan-400 rounded-lg transition-all cursor-pointer shrink-0"
                 >
                   {{ showQR ? 'Cerrar' : 'QR' }}
@@ -678,23 +889,33 @@ const formatFecha = (isoString: string) => {
             </div>
           </div>
 
-          <!-- Redes Sociales (Facebook/Instagram Credentials) -->
+          <!-- Redes Sociales (Facebook/Instagram/TikTok Credentials) -->
           <div class="space-y-3 pt-3 border-t border-slate-850">
-            <h4 class="text-xs font-bold text-slate-200">Cuentas de Redes</h4>
+            <h4 class="text-xs font-bold text-slate-200">Cuentas de Redes (Captura)</h4>
             
             <div class="space-y-2.5">
               <div>
-                <label class="block text-[9px] text-slate-500 font-bold uppercase mb-1">Usuario Instagram / FB</label>
+                <label class="block text-[9px] text-slate-500 font-bold uppercase mb-1">Usuario Instagram / Facebook</label>
                 <input 
                   v-model="vendedorCanales.instagramUser"
                   type="text" 
                   class="w-full px-3 py-2 bg-slate-950 border border-slate-800 rounded-lg text-xs text-slate-200 outline-none focus:border-cyan-500"
-                  placeholder="Ej: @aminhatar.comoauto"
+                  placeholder="Ej: @concesionaria.instagram"
+                />
+              </div>
+
+              <div>
+                <label class="block text-[9px] text-slate-500 font-bold uppercase mb-1">Usuario TikTok</label>
+                <input 
+                  v-model="vendedorCanales.tiktokUser"
+                  type="text" 
+                  class="w-full px-3 py-2 bg-slate-950 border border-slate-800 rounded-lg text-xs text-slate-200 outline-none focus:border-cyan-500"
+                  placeholder="Ej: @concesionaria.tiktok"
                 />
               </div>
               
               <div>
-                <label class="block text-[9px] text-slate-500 font-bold uppercase mb-1">Contraseña</label>
+                <label class="block text-[9px] text-slate-500 font-bold uppercase mb-1">Contraseña de Acceso</label>
                 <input 
                   v-model="vendedorCanales.redesPass"
                   type="password" 
@@ -744,7 +965,7 @@ const formatFecha = (isoString: string) => {
                   :class="[
                     'text-[9px] px-2 py-0.5 rounded font-extrabold uppercase',
                     lead.clasificacion === 'Caliente' ? 'bg-rose-500/10 text-rose-400 border border-rose-500/20' :
-                    lead.clasificacion === 'Tibio' ? 'bg-amber-500/10 text-amber-400 border border-amber-500/20' :
+                    lead.clasificacion === 'Tibio' ? 'bg-amber-500/10 text-amber-400 border-amber-500/20' :
                     'bg-slate-500/10 text-slate-400 border border-slate-500/20'
                   ]"
                 >
@@ -867,6 +1088,207 @@ const formatFecha = (isoString: string) => {
         </div>
       </div>
 
+    </div>
+
+    <!-- Pestaña de Historial de Leads & Re-marketing -->
+    <div v-else class="grid grid-cols-1 lg:grid-cols-12 gap-8">
+      
+      <!-- Panel de Control y Filtros de Re-marketing (Izquierda - 7/12) -->
+      <div class="lg:col-span-7 space-y-4">
+        <h3 class="text-sm font-bold text-slate-400 uppercase tracking-wider px-1">Historial Completo de Leads</h3>
+
+        <!-- Barra de Filtros -->
+        <div class="grid grid-cols-1 sm:grid-cols-3 gap-3 bg-slate-900/40 p-4 rounded-xl border border-slate-800">
+          <div>
+            <label class="block text-[9px] text-slate-500 font-bold uppercase mb-1">Buscar por Cliente/Auto</label>
+            <input 
+              v-model="remarketingSearch"
+              type="text"
+              placeholder="Ej: Juan..."
+              class="w-full px-3 py-2 bg-slate-950 border border-slate-800 rounded-lg text-xs text-slate-200 outline-none focus:border-emerald-500"
+            />
+          </div>
+
+          <div>
+            <label class="block text-[9px] text-slate-500 font-bold uppercase mb-1">Clasificación</label>
+            <select 
+              v-model="remarketingFilterClasificacion"
+              class="w-full px-2 py-2 bg-slate-950 border border-slate-800 rounded-lg text-xs text-slate-355 outline-none focus:border-emerald-500"
+            >
+              <option value="todos">Todos</option>
+              <option value="Caliente">Caliente</option>
+              <option value="Tibio">Tibio</option>
+              <option value="Frio">Frio</option>
+            </select>
+          </div>
+
+          <div>
+            <label class="block text-[9px] text-slate-500 font-bold uppercase mb-1">Estado del Lead</label>
+            <select 
+              v-model="remarketingFilterEstado"
+              class="w-full px-2 py-2 bg-slate-950 border border-slate-800 rounded-lg text-xs text-slate-355 outline-none focus:border-emerald-500"
+            >
+              <option value="todos">Todos</option>
+              <option value="nuevo">Nuevo</option>
+              <option value="en_contacto">En Contacto</option>
+              <option value="interesado">Interesado</option>
+              <option value="no_interesado">No Interesado</option>
+              <option value="vendido">Vendido</option>
+            </select>
+          </div>
+        </div>
+
+        <!-- Tabla con Checkboxes -->
+        <div class="overflow-x-auto rounded-xl border border-slate-800 bg-slate-900/20 max-h-[450px]">
+          <table class="w-full text-left border-collapse">
+            <thead>
+              <tr class="border-b border-slate-800 bg-slate-950/60 text-[10px] font-bold text-slate-400 uppercase">
+                <th class="p-3 text-center w-10">
+                  <input 
+                    type="checkbox" 
+                    :checked="selectedRemarketingLeads.length > 0 && selectedRemarketingLeads.length === filteredRemarketingLeads.length"
+                    @change="toggleSelectAllLeads"
+                    class="cursor-pointer rounded border-slate-700 bg-slate-950 accent-emerald-500"
+                  />
+                </th>
+                <th class="p-3">Nombre</th>
+                <th class="p-3">Auto de Interés</th>
+                <th class="p-3 text-center">Clasif.</th>
+                <th class="p-3">Estado</th>
+                <th class="p-3">Vendedor</th>
+              </tr>
+            </thead>
+            <tbody class="divide-y divide-slate-800/40 text-xs text-slate-300">
+              <tr v-if="filteredRemarketingLeads.length === 0">
+                <td colspan="6" class="p-6 text-center text-slate-500">
+                  No se encontraron leads con los filtros seleccionados.
+                </td>
+              </tr>
+              <tr 
+                v-for="lead in filteredRemarketingLeads" 
+                :key="lead.id"
+                :class="['hover:bg-slate-900/20 transition-colors', selectedRemarketingLeads.includes(lead.id) ? 'bg-emerald-500/5' : '']"
+              >
+                <td class="p-3 text-center">
+                  <input 
+                    type="checkbox" 
+                    :checked="selectedRemarketingLeads.includes(lead.id)"
+                    @change="toggleSelectLead(lead.id)"
+                    class="cursor-pointer rounded border-slate-700 bg-slate-950 accent-emerald-500"
+                  />
+                </td>
+                <td class="p-3 font-semibold text-white">
+                  {{ lead.nombre_cliente }}
+                  <span class="text-[10px] text-slate-500 block">{{ lead.telefono_whatsapp }}</span>
+                </td>
+                <td class="p-3">
+                  <span class="text-emerald-400 font-semibold">{{ lead.auto_interes }}</span>
+                </td>
+                <td class="p-3 text-center">
+                  <span 
+                    :class="[
+                      'text-[9px] px-2 py-0.5 rounded font-extrabold uppercase',
+                      lead.clasificacion === 'Caliente' ? 'bg-rose-500/10 text-rose-400 border border-rose-500/20' :
+                      lead.clasificacion === 'Tibio' ? 'bg-amber-500/10 text-amber-400 border-amber-500/20' :
+                      'bg-slate-500/10 text-slate-400 border-slate-500/20'
+                    ]"
+                  >
+                    {{ lead.clasificacion }}
+                  </span>
+                </td>
+                <td class="p-3 capitalize text-[10px]">
+                  {{ lead.estado_lead.replace('_', ' ') }}
+                </td>
+                <td class="p-3 text-[10px] text-cyan-400">
+                  {{ lead.vendedor_nombre }}
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <!-- Panel de Envío Masivo / Acciones de Re-marketing (Derecha - 5/12) -->
+      <div class="lg:col-span-5">
+        <div class="glass-panel p-6 rounded-2xl border border-slate-800 space-y-6">
+          <div class="border-b border-slate-800 pb-3">
+            <h3 class="text-lg font-bold text-white flex items-center gap-2">
+              <Sparkles class="w-5 h-5 text-emerald-400 animate-pulse" />
+              <span>Acción Masiva</span>
+            </h3>
+            <p class="text-slate-450 text-xs mt-1">Envía ofertas de captación y re-engagement a los leads seleccionados</p>
+          </div>
+
+          <!-- Leads seleccionados count -->
+          <div class="p-4 bg-slate-950/60 border border-slate-900 rounded-xl flex items-center justify-between">
+            <span class="text-xs text-slate-400 font-semibold">Leads Seleccionados:</span>
+            <span class="px-3 py-1 bg-emerald-500/10 text-emerald-400 border border-emerald-500/25 rounded-md font-extrabold text-sm">
+              {{ selectedRemarketingLeads.length }}
+            </span>
+          </div>
+
+          <!-- Selección de Plantilla -->
+          <div class="space-y-2">
+            <label class="block text-[10px] font-bold text-slate-400 uppercase tracking-wider">Seleccionar Plantilla de Mensaje</label>
+            <select 
+              v-model="remarketingTemplate"
+              class="w-full px-3 py-2.5 bg-slate-950 border border-slate-800 rounded-xl text-xs text-slate-300 outline-none focus:border-emerald-500"
+            >
+              <option value="financiacion">Financiación Express</option>
+              <option value="nuevos">Novedades / Ingresos Recientes</option>
+              <option value="bono">Bonificación de Gestoría / Transferencia</option>
+              <option value="custom">Mensaje Personalizado (Escribir abajo)</option>
+            </select>
+          </div>
+
+          <!-- Textarea para custom template -->
+          <div v-if="remarketingTemplate === 'custom'" class="space-y-2">
+            <label class="block text-[10px] font-bold text-slate-400 uppercase tracking-wider">Mensaje Personalizado</label>
+            <textarea 
+              v-model="customTemplateText"
+              rows="4"
+              placeholder="Hola {nombre_cliente}, te escribo porque..."
+              class="w-full p-3 bg-slate-950 border border-slate-800 rounded-xl focus:border-emerald-500 outline-none text-slate-200 text-xs placeholder:text-slate-650"
+            ></textarea>
+            <span class="text-[9px] text-slate-500 block">Sugerencia: Usa {nombre_cliente} y {auto_interes} para reemplazos automáticos.</span>
+          </div>
+
+          <!-- Previsualización Dinámica -->
+          <div class="space-y-2">
+            <label class="block text-[10px] font-bold text-slate-400 uppercase tracking-wider">Vista Previa (Primer Lead Seleccionado)</label>
+            <div class="p-4 bg-slate-950/40 border border-slate-900 rounded-xl text-xs text-slate-300 leading-relaxed font-sans italic whitespace-pre-line">
+              <span v-if="selectedRemarketingLeads.length === 0" class="text-slate-600">Ningún lead seleccionado para vista previa.</span>
+              <span v-else>{{ getMessagePreview(leads.find(l => l.id === selectedRemarketingLeads[0])) }}</span>
+            </div>
+          </div>
+
+          <!-- Botón de Despacho y Barra de Progreso -->
+          <div class="space-y-4 pt-2">
+            <button 
+              @click="handleSendRemarketingCampaign"
+              :disabled="selectedRemarketingLeads.length === 0 || isSendingCampaign"
+              class="w-full py-3 rounded-xl font-bold btn-gradient text-slate-950 flex items-center justify-center gap-2 cursor-pointer shadow-lg disabled:opacity-50 disabled:cursor-not-allowed text-sm"
+            >
+              <MessageSquare class="w-4 h-4 shrink-0" />
+              <span>Despachar Campaña por WhatsApp</span>
+            </button>
+
+            <!-- Barra de Progreso del Envío -->
+            <div v-if="isSendingCampaign" class="space-y-2">
+              <div class="flex justify-between text-xs font-bold text-slate-400">
+                <span>Enviando mensajes...</span>
+                <span class="text-emerald-400">{{ campaignProgress }} / {{ campaignTotal }}</span>
+              </div>
+              <div class="w-full bg-slate-950 rounded-full h-2 overflow-hidden border border-slate-900">
+                <div 
+                  class="h-full bg-emerald-550 rounded-full transition-all duration-300"
+                  :style="{ width: (campaignProgress / campaignTotal * 100) + '%' }"
+                ></div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
     </div>
   </div>
 </template>
