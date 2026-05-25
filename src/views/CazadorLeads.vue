@@ -43,7 +43,10 @@ const vendedorCanales = ref({
   whatsappApiUrl: '',
   whatsappApiToken: '',
   metaAccessToken: '',
-  tiktokAccessToken: ''
+  tiktokAccessToken: '',
+  instagramConectado: false,
+  facebookConectado: false,
+  tiktokConectado: false
 })
 const showQR = ref(false)
 const savingCanales = ref(false)
@@ -179,7 +182,10 @@ const loadVendedorCanales = async () => {
       whatsappApiUrl: 'https://api.evolution.comoauto.site/v1',
       whatsappApiToken: 'my-super-secret-token-1234',
       metaAccessToken: '',
-      tiktokAccessToken: ''
+      tiktokAccessToken: '',
+      instagramConectado: authStore.profile?.rol === 'vendedor' ? true : false,
+      facebookConectado: authStore.profile?.rol === 'vendedor' ? true : false,
+      tiktokConectado: authStore.profile?.rol === 'vendedor' ? true : false
     }
     return
   }
@@ -205,7 +211,10 @@ const loadVendedorCanales = async () => {
         whatsappApiUrl: whatsapp.api_url || '',
         whatsappApiToken: whatsapp.api_token || '',
         metaAccessToken: redes.meta_access_token || '',
-        tiktokAccessToken: redes.tiktok_access_token || ''
+        tiktokAccessToken: redes.tiktok_access_token || '',
+        instagramConectado: redes.instagram?.conectado || false,
+        facebookConectado: redes.facebook?.conectado || false,
+        tiktokConectado: redes.tiktok?.conectado || false
       }
     }
   } catch (err) {
@@ -272,6 +281,8 @@ const simularEscaneoQR = () => {
   alert('¡Código QR Escaneado! Sesión de WhatsApp iniciada exitosamente.')
 }
 
+const isConnectingRed = ref<string | null>(null)
+
 const desconectarWhatsApp = async () => {
   if (pollingInterval) {
     clearInterval(pollingInterval)
@@ -287,23 +298,37 @@ const desconectarWhatsApp = async () => {
   }
 
   const instanceName = `comoauto_vendedor_${authStore.profile?.id || 'default'}`
-  const apiUrl = vendedorCanales.value.whatsappApiUrl.replace(/\/$/, '')
+  const apiUrl = vendedorCanales.value.whatsappApiUrl
 
   if (confirm('¿Estás seguro de que deseas desconectar y eliminar tu instancia de WhatsApp real?')) {
     try {
+      // 1. Logout a través de Proxy
       try {
-        await fetch(`${apiUrl}/instance/logout/${instanceName}`, {
-          method: 'DELETE',
-          headers: { 'apikey': vendedorCanales.value.whatsappApiToken }
+        await fetch('/api/bot/whatsapp-proxy', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            apiUrl,
+            apiToken: vendedorCanales.value.whatsappApiToken,
+            action: 'logout',
+            instanceName
+          })
         })
       } catch (e) {
         console.warn('Error al desloguear instancia:', e)
       }
 
+      // 2. Delete a través de Proxy
       try {
-        await fetch(`${apiUrl}/instance/delete/${instanceName}`, {
-          method: 'DELETE',
-          headers: { 'apikey': vendedorCanales.value.whatsappApiToken }
+        await fetch('/api/bot/whatsapp-proxy', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            apiUrl,
+            apiToken: vendedorCanales.value.whatsappApiToken,
+            action: 'delete',
+            instanceName
+          })
         })
       } catch (e) {
         console.warn('Error al borrar la instancia:', e)
@@ -352,33 +377,38 @@ const obtenerQRReal = async () => {
   showQR.value = true
 
   const instanceName = `comoauto_vendedor_${authStore.profile?.id || 'default'}`
-  const apiUrl = vendedorCanales.value.whatsappApiUrl.replace(/\/$/, '')
+  const apiUrl = vendedorCanales.value.whatsappApiUrl
 
   try {
+    // 1. Crear Instancia en Evolution API mediante el Proxy
     try {
-      await fetch(`${apiUrl}/instance/create`, {
+      await fetch('/api/bot/whatsapp-proxy', {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'apikey': vendedorCanales.value.whatsappApiToken
-        },
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          instanceName,
-          token: vendedorCanales.value.whatsappApiToken,
-          qrcode: true
+          apiUrl,
+          apiToken: vendedorCanales.value.whatsappApiToken,
+          action: 'create',
+          instanceName
         })
       })
     } catch (createErr) {
       console.warn('La instancia ya podría existir:', createErr)
     }
 
-    const connectRes = await fetch(`${apiUrl}/instance/connect/${instanceName}`, {
-      method: 'GET',
-      headers: {
-        'apikey': vendedorCanales.value.whatsappApiToken
-      }
+    // 2. Conectar y traer QR mediante el Proxy
+    const connectRes = await fetch('/api/bot/whatsapp-proxy', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        apiUrl,
+        apiToken: vendedorCanales.value.whatsappApiToken,
+        action: 'connect',
+        instanceName
+      })
     })
-    const connectData = await connectRes.json()
+    const connectResult = await connectRes.json()
+    const connectData = connectResult.data
 
     let qrBase64 = ''
     if (connectData) {
@@ -394,21 +424,27 @@ const obtenerQRReal = async () => {
     if (qrBase64) {
       qrCodeImage.value = qrBase64
     } else {
-      console.warn('Estructura de respuesta QR no reconocida:', connectData)
+      console.warn('Estructura de respuesta QR no reconocida:', connectResult)
       alert('Se inició la instancia, pero no pudimos capturar el QR automáticamente. Revisa tu consola.')
     }
 
     if (pollingInterval) clearInterval(pollingInterval)
 
+    // 3. Iniciar Polling de estado mediante el Proxy
     pollingInterval = setInterval(async () => {
       try {
-        const stateRes = await fetch(`${apiUrl}/instance/connectionState/${instanceName}`, {
-          method: 'GET',
-          headers: {
-            'apikey': vendedorCanales.value.whatsappApiToken
-          }
+        const stateRes = await fetch('/api/bot/whatsapp-proxy', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            apiUrl,
+            apiToken: vendedorCanales.value.whatsappApiToken,
+            action: 'connectionState',
+            instanceName
+          })
         })
-        const stateData = await stateRes.json()
+        const stateResult = await stateRes.json()
+        const stateData = stateResult.data
         
         const isConnected = 
           stateData?.instance?.state === 'open' || 
@@ -453,6 +489,104 @@ const obtenerQRReal = async () => {
     alert('Error al intentar conectar: ' + err.message)
   } finally {
     isConnectingWhatsApp.value = false
+  }
+}
+
+// Vincular red social directamente por backend scraper
+const vincularRedDirecto = async (red: 'instagram' | 'facebook' | 'tiktok') => {
+  let usuario = ''
+  let contrasena = vendedorCanales.value.redesPass
+
+  if (red === 'instagram') usuario = vendedorCanales.value.instagramUser
+  if (red === 'facebook') usuario = vendedorCanales.value.instagramUser
+  if (red === 'tiktok') usuario = vendedorCanales.value.tiktokUser
+
+  if (!usuario || !contrasena) {
+    alert(`Por favor ingresa tu usuario de ${red} y contraseña para vincular directamente.`)
+    return
+  }
+
+  isConnectingRed.value = red
+
+  if (authStore.isDemoMode) {
+    setTimeout(() => {
+      if (red === 'instagram') vendedorCanales.value.instagramConectado = true
+      if (red === 'facebook') vendedorCanales.value.facebookConectado = true
+      if (red === 'tiktok') vendedorCanales.value.tiktokConectado = true
+      isConnectingRed.value = null
+      alert(`¡Cuenta de ${red} vinculada directamente con éxito (Modo Demo)!`)
+    }, 1800)
+    return
+  }
+
+  try {
+    const res = await fetch('/api/bot/redes-connect', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        usuario,
+        contrasena,
+        red,
+        vendedor_id: authStore.profile?.id
+      })
+    })
+
+    const result = await res.json()
+    if (res.ok && result.success) {
+      if (red === 'instagram') vendedorCanales.value.instagramConectado = true
+      if (red === 'facebook') vendedorCanales.value.facebookConectado = true
+      if (red === 'tiktok') vendedorCanales.value.tiktokConectado = true
+      alert(result.mensaje)
+    } else {
+      alert('Error en vinculación directa: ' + (result.error || 'Verifica tus credenciales e intenta nuevamente.'))
+    }
+  } catch (err: any) {
+    console.error('Error al vincular red social:', err)
+    alert('Error de red: ' + err.message)
+  } finally {
+    isConnectingRed.value = null
+  }
+}
+
+// Desconectar red social directamente
+const desconectarRedDirecto = async (red: 'instagram' | 'facebook' | 'tiktok') => {
+  if (confirm(`¿Estás seguro de que deseas desvincular tu cuenta directa de ${red}?`)) {
+    if (authStore.isDemoMode) {
+      if (red === 'instagram') vendedorCanales.value.instagramConectado = false
+      if (red === 'facebook') vendedorCanales.value.facebookConectado = false
+      if (red === 'tiktok') vendedorCanales.value.tiktokConectado = false
+      alert(`Cuenta directa de ${red} desvinculada.`);
+      return
+    }
+
+    try {
+      const { data: usuarioData, error: getError } = await supabase
+        .from('usuarios')
+        .select('config_redes_sociales')
+        .eq('id', authStore.profile?.id)
+        .single()
+
+      if (getError) throw getError
+
+      const configRedes = usuarioData?.config_redes_sociales || {}
+      if (configRedes[red]) {
+        configRedes[red].conectado = false
+        configRedes[red].contrasena = ''
+      }
+
+      await supabase
+        .from('usuarios')
+        .update({ config_redes_sociales: configRedes })
+        .eq('id', authStore.profile?.id)
+
+      if (red === 'instagram') vendedorCanales.value.instagramConectado = false
+      if (red === 'facebook') vendedorCanales.value.facebookConectado = false
+      if (red === 'tiktok') vendedorCanales.value.tiktokConectado = false
+      alert(`Cuenta directa de ${red} desvinculada con éxito.`);
+    } catch (err: any) {
+      console.error('Error al desvincular red social:', err)
+      alert('Error al desvincular: ' + err.message)
+    }
   }
 }
 
@@ -1046,58 +1180,116 @@ const formatFecha = (isoString: string) => {
           </div>
 
           <!-- Redes Sociales (Facebook/Instagram/TikTok Credentials) -->
-          <div class="space-y-3 pt-3 border-t border-slate-850">
-            <h4 class="text-xs font-bold text-slate-200">Cuentas de Redes (Captura)</h4>
+          <div class="space-y-4 pt-3 border-t border-slate-850">
+            <h4 class="text-xs font-bold text-slate-200">Cuentas de Redes (Conexión Directa)</h4>
             
-            <div class="space-y-2.5">
+            <div class="space-y-3.5">
+              <!-- Contraseña global necesaria para el login de scraping directo -->
               <div>
-                <label class="block text-[9px] text-slate-500 font-bold uppercase mb-1">Usuario Instagram / Facebook</label>
-                <input 
-                  v-model="vendedorCanales.instagramUser"
-                  type="text" 
-                  class="w-full px-3 py-2 bg-slate-950 border border-slate-800 rounded-lg text-xs text-slate-200 outline-none focus:border-cyan-500"
-                  placeholder="Ej: @concesionaria.instagram"
-                />
-              </div>
-
-              <div>
-                <label class="block text-[9px] text-slate-500 font-bold uppercase mb-1">Usuario TikTok</label>
-                <input 
-                  v-model="vendedorCanales.tiktokUser"
-                  type="text" 
-                  class="w-full px-3 py-2 bg-slate-950 border border-slate-800 rounded-lg text-xs text-slate-200 outline-none focus:border-cyan-500"
-                  placeholder="Ej: @concesionaria.tiktok"
-                />
-              </div>
-              
-              <div>
-                <label class="block text-[9px] text-slate-500 font-bold uppercase mb-1">Contraseña de Acceso</label>
+                <label class="block text-[9px] text-slate-500 font-bold uppercase mb-1">Contraseña de tus Redes (Para Vinculación)</label>
                 <input 
                   v-model="vendedorCanales.redesPass"
                   type="password" 
                   class="w-full px-3 py-2 bg-slate-950 border border-slate-800 rounded-lg text-xs text-slate-200 outline-none focus:border-cyan-500"
-                  placeholder="••••••••"
+                  placeholder="Introduce contraseña..."
                 />
               </div>
 
-              <div>
-                <label class="block text-[9px] text-slate-500 font-bold uppercase mb-1">Access Token de Meta (Facebook/Instagram)</label>
-                <input 
-                  v-model="vendedorCanales.metaAccessToken"
-                  type="password" 
-                  class="w-full px-3 py-2 bg-slate-950 border border-slate-800 rounded-lg text-xs text-slate-200 outline-none focus:border-cyan-500"
-                  placeholder="EAN... (Token de larga duración)"
-                />
+              <!-- Fila Instagram -->
+              <div class="p-3 bg-slate-950/40 border border-slate-850 rounded-xl space-y-2">
+                <div class="flex justify-between items-center">
+                  <span class="text-xs font-bold text-slate-200">Instagram</span>
+                  <!-- Indicador de estado -->
+                  <span 
+                    :class="[
+                      'text-[9px] px-2 py-0.5 rounded font-extrabold uppercase',
+                      vendedorCanales.instagramConectado ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20' : 'bg-slate-550/15 text-slate-400'
+                    ]"
+                  >
+                    {{ vendedorCanales.instagramConectado ? 'Vinculado Directo' : 'Desconectado' }}
+                  </span>
+                </div>
+                
+                <div v-if="vendedorCanales.instagramConectado" class="flex justify-between items-center text-xs text-slate-300 bg-emerald-550/5 p-2 rounded border border-emerald-500/25">
+                  <span class="truncate">Usuario: <strong>{{ vendedorCanales.instagramUser }}</strong></span>
+                  <button @click="desconectarRedDirecto('instagram')" class="text-[9px] text-rose-450 hover:underline cursor-pointer font-bold shrink-0 ml-1">Desvincular</button>
+                </div>
+                <div v-else class="flex gap-2">
+                  <input 
+                    v-model="vendedorCanales.instagramUser"
+                    type="text" 
+                    placeholder="@usuario_instagram"
+                    class="flex-1 px-2.5 py-1.5 bg-slate-950 border border-slate-800 rounded text-xs text-slate-200 outline-none focus:border-cyan-550"
+                  />
+                  <button 
+                    @click="vincularRedDirecto('instagram')"
+                    :disabled="isConnectingRed === 'instagram'"
+                    class="px-3 py-1.5 bg-slate-900 border border-slate-800 hover:border-cyan-500/40 text-[10px] font-bold text-slate-300 hover:text-cyan-400 rounded transition-all cursor-pointer flex items-center justify-center gap-1"
+                  >
+                    <span v-if="isConnectingRed === 'instagram'" class="w-3 h-3 border border-cyan-400 border-t-transparent rounded-full animate-spin"></span>
+                    <span>Conectar</span>
+                  </button>
+                </div>
               </div>
 
-              <div>
-                <label class="block text-[9px] text-slate-500 font-bold uppercase mb-1">Access Token de TikTok</label>
-                <input 
-                  v-model="vendedorCanales.tiktokAccessToken"
-                  type="password" 
-                  class="w-full px-3 py-2 bg-slate-950 border border-slate-800 rounded-lg text-xs text-slate-200 outline-none focus:border-cyan-500"
-                  placeholder="act... (Token oficial de desarrollador)"
-                />
+              <!-- Fila TikTok -->
+              <div class="p-3 bg-slate-950/40 border border-slate-850 rounded-xl space-y-2">
+                <div class="flex justify-between items-center">
+                  <span class="text-xs font-bold text-slate-200">TikTok</span>
+                  <span 
+                    :class="[
+                      'text-[9px] px-2 py-0.5 rounded font-extrabold uppercase',
+                      vendedorCanales.tiktokConectado ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20' : 'bg-slate-550/15 text-slate-400'
+                    ]"
+                  >
+                    {{ vendedorCanales.tiktokConectado ? 'Vinculado Directo' : 'Desconectado' }}
+                  </span>
+                </div>
+                
+                <div v-if="vendedorCanales.tiktokConectado" class="flex justify-between items-center text-xs text-slate-300 bg-emerald-550/5 p-2 rounded border border-emerald-500/25">
+                  <span class="truncate">Usuario: <strong>{{ vendedorCanales.tiktokUser }}</strong></span>
+                  <button @click="desconectarRedDirecto('tiktok')" class="text-[9px] text-rose-450 hover:underline cursor-pointer font-bold shrink-0 ml-1">Desvincular</button>
+                </div>
+                <div v-else class="flex gap-2">
+                  <input 
+                    v-model="vendedorCanales.tiktokUser"
+                    type="text" 
+                    placeholder="@usuario_tiktok"
+                    class="flex-1 px-2.5 py-1.5 bg-slate-950 border border-slate-800 rounded text-xs text-slate-200 outline-none focus:border-cyan-555"
+                  />
+                  <button 
+                    @click="vincularRedDirecto('tiktok')"
+                    :disabled="isConnectingRed === 'tiktok'"
+                    class="px-3 py-1.5 bg-slate-900 border border-slate-800 hover:border-cyan-500/40 text-[10px] font-bold text-slate-300 hover:text-cyan-400 rounded transition-all cursor-pointer flex items-center justify-center gap-1"
+                  >
+                    <span v-if="isConnectingRed === 'tiktok'" class="w-3 h-3 border border-cyan-400 border-t-transparent rounded-full animate-spin"></span>
+                    <span>Conectar</span>
+                  </button>
+                </div>
+              </div>
+
+              <!-- Tokens avanzados de Desarrollador (Meta y TikTok API Oficiales) -->
+              <div class="p-3 bg-slate-950/40 border border-slate-850 rounded-xl space-y-2">
+                <span class="block text-[9px] text-slate-550 font-bold uppercase">Credenciales API de Desarrollador (Meta/TikTok)</span>
+                <div>
+                  <label class="block text-[9px] text-slate-500 font-bold uppercase mb-1">Access Token de Meta (Facebook/Instagram)</label>
+                  <input 
+                    v-model="vendedorCanales.metaAccessToken"
+                    type="password" 
+                    class="w-full px-3 py-2 bg-slate-950 border border-slate-800 rounded-lg text-xs text-slate-200 outline-none focus:border-cyan-500"
+                    placeholder="EAN... (Token de larga duración)"
+                  />
+                </div>
+
+                <div>
+                  <label class="block text-[9px] text-slate-500 font-bold uppercase mb-1">Access Token de TikTok</label>
+                  <input 
+                    v-model="vendedorCanales.tiktokAccessToken"
+                    type="password" 
+                    class="w-full px-3 py-2 bg-slate-950 border border-slate-800 rounded-lg text-xs text-slate-200 outline-none focus:border-cyan-500"
+                    placeholder="act... (Token oficial de desarrollador)"
+                  />
+                </div>
               </div>
             </div>
 
@@ -1128,7 +1320,7 @@ const formatFecha = (isoString: string) => {
             >
               <span v-if="savingCanales" class="w-3.5 h-3.5 border border-cyan-400 border-t-transparent rounded-full animate-spin"></span>
               <Save v-else class="w-3.5 h-3.5 text-cyan-400" />
-              <span>Guardar Cuentas Privadas</span>
+              <span>Guardar Configuración de Canales</span>
             </button>
           </div>
         </div>

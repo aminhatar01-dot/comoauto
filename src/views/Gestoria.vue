@@ -149,9 +149,42 @@ const crearCarpetaGestoria = async () => {
         .insert([nuevoTramite])
         .select()
       
-      if (error) throw error
+      if (error) {
+        // Fallback: Si da error de columna no existente (p. ej. cliente_nombre), reintentar sin campos extendidos
+        if (error.message.includes('cliente_nombre') || error.message.includes('column') || error.message.includes('does not exist')) {
+          console.warn('Esquema extendido de gestoría no disponible en Supabase. Intentando esquema base.')
+          const tramiteBase = {
+            vehiculo_id: selectedVehiculoId.value,
+            estado_tramite: 'pendiente',
+            checklist_documentos: {
+              titulo: false,
+              cedula_verde: false,
+              f08: false,
+              verificacion_policial: false,
+              libre_deuda: false
+            },
+            costo_transferencia: nuevoCostoTransferencia.value || 0
+          }
+          const { data: dataBase, error: errorBase } = await supabase
+            .from('tramites_gestoria')
+            .insert([tramiteBase])
+            .select()
 
-      if (data && data[0]) {
+          if (errorBase) throw errorBase
+
+          if (dataBase && dataBase[0]) {
+            await loadTramites()
+            const creado = tramites.value.find(t => t.vehiculo_id === selectedVehiculoId.value)
+            if (creado) {
+              selectedTramite.value = creado
+            }
+            showCreateModal.value = false
+            alert('Carpeta de gestoría creada (Esquema Básico). Ejecuta alter_schema.sql en Supabase para habilitar campos de cliente.')
+          }
+        } else {
+          throw error
+        }
+      } else if (data && data[0]) {
         await loadTramites()
         const creado = tramites.value.find(t => t.vehiculo_id === selectedVehiculoId.value)
         if (creado) {
@@ -248,10 +281,35 @@ const autoGenerarCarpetas = async () => {
           .from('tramites_gestoria')
           .insert(inserts)
 
-        if (insertError) throw insertError
+        if (insertError) {
+          if (insertError.message.includes('cliente_nombre') || insertError.message.includes('column') || insertError.message.includes('does not exist')) {
+            console.warn('Esquema extendido de gestoría no disponible en Supabase al autogenerar. Reintentando esquema base.')
+            const insertsBase = vehsSinTramite.map((v: any) => ({
+              vehiculo_id: v.id,
+              estado_tramite: 'pendiente',
+              checklist_documentos: {
+                titulo: false,
+                cedula_verde: false,
+                f08: false,
+                verificacion_policial: false,
+                libre_deuda: false
+              },
+              costo_transferencia: Math.round(Number(v.precio) * 0.05)
+            }))
+            const { error: errorBase } = await supabase
+              .from('tramites_gestoria')
+              .insert(insertsBase)
 
-        await loadTramites()
-        alert(`Se han autogenerado ${inserts.length} carpetas de gestoría.`);
+            if (errorBase) throw errorBase
+            await loadTramites()
+            alert(`Se han autogenerado ${insertsBase.length} carpetas de gestoría (Esquema Básico).`);
+          } else {
+            throw insertError
+          }
+        } else {
+          await loadTramites()
+          alert(`Se han autogenerado ${inserts.length} carpetas de gestoría.`);
+        }
       } catch (err: any) {
         console.error('Error al autogenerar carpetas:', err.message)
         alert('Error al autogenerar carpetas: ' + err.message)
@@ -555,11 +613,31 @@ const handleSaveTramite = async () => {
         })
         .eq('id', selectedTramite.value.id)
       
-      if (error) throw error
-      successMsg.value = '¡Cambios sincronizados en la nube!'
-      setTimeout(() => { successMsg.value = null }, 3000)
+      if (error) {
+        if (error.message.includes('cliente_nombre') || error.message.includes('column') || error.message.includes('does not exist')) {
+          console.warn('Esquema extendido no disponible en guardado. Intentando con campos básicos.')
+          const { error: errorBase } = await supabase
+            .from('tramites_gestoria')
+            .update({
+              checklist_documentos: selectedTramite.value.checklist_documentos,
+              estado_tramite: selectedTramite.value.estado_tramite,
+              costo_transferencia: selectedTramite.value.costo_transferencia
+            })
+            .eq('id', selectedTramite.value.id)
+
+          if (errorBase) throw errorBase
+          successMsg.value = '¡Cambios guardados! (Esquema Básico)'
+          setTimeout(() => { successMsg.value = null }, 4000)
+        } else {
+          throw error
+        }
+      } else {
+        successMsg.value = '¡Cambios sincronizados en la nube!'
+        setTimeout(() => { successMsg.value = null }, 3000)
+      }
     } catch (err: any) {
       console.error('Error al guardar trámite:', err.message)
+      alert('Error al guardar cambios: ' + err.message)
     } finally {
       updatingTramite.value = null
     }
